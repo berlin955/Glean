@@ -46,7 +46,7 @@ static class TexTest
         for (int k = 1; k <= 10; k++) { f.Opacity = k / 10.0; Application.DoEvents(); System.Threading.Thread.Sleep(20); }
         if (redraw) RedrawWindow(f.Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400);
         int m = Measure(f, tb);
-        Console.WriteLine("FADE redraw=" + redraw + " darkerThanInk=" + (m / 100000) + " smoothEdge=" + (m % 100000));
+        System.IO.File.AppendAllText("out.txt", "FADE redraw=" + redraw + " darkerThanInk=" + (m / 100000) + " smoothEdge=" + (m % 100000) + "\r\n");
         f.Close();
     }
     [STAThread]

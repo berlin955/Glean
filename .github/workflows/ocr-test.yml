@@ -12,5 +12,5 @@ jobs:
         run: |
           set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           "%CSC%" /nologo /target:winexe /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:tex.exe TexTest.cs || exit /b 1
-          start /wait tex.exe > out.txt
+          start /wait tex.exe
           type out.txt

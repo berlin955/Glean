@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.8.0.0")]
-[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyVersion("0.9.0.0")]
+[assembly: AssemblyFileVersion("0.9.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.8";
+        public const string Version = "0.9";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -1509,8 +1509,42 @@ namespace Glean
         // (否则之后再复制同样的内容,会"复活"以前起的标题和分类)
         void Forget(Item it)
         {
-            meta.Remove(it.Hash);
+            if (!Items.Any(x => x.Hash == it.Hash)) meta.Remove(it.Hash);   // 同样的内容又复制回来了:标题等设置留给新的那条
             DeleteFile(it);
+        }
+
+        // ---- 可以撤销的删除:先从列表里拿掉,文件过几秒才真正删除
+        Item pendingDel;
+        int pendingIdx;
+
+        public void RemoveUndoable(Item it)
+        {
+            FinishPendingDelete();
+            int i = Items.IndexOf(it);
+            if (i < 0) return;
+            Items.RemoveAt(i);
+            pendingDel = it;
+            pendingIdx = i;
+            SaveOrder();
+        }
+
+        public Item UndoDelete()
+        {
+            Item it = pendingDel;
+            if (it == null) return null;
+            pendingDel = null;
+            if (Items.Any(x => x.Hash == it.Hash)) { Forget(it); return null; }   // 期间又复制了同样的内容
+            Items.Insert(Math.Min(pendingIdx, Items.Count), it);
+            SaveOrder();
+            return it;
+        }
+
+        public void FinishPendingDelete()
+        {
+            Item it = pendingDel;
+            if (it == null) return;
+            pendingDel = null;
+            Forget(it);
         }
 
         public void SetBoard(Item it, string boardId)
@@ -6974,6 +7008,11 @@ namespace Glean
         readonly Chips modeSwitch = new Chips();     // 左上角:剪切板 | 文件夹
         readonly Chips folderTabs = new Chips();     // 文件夹模式下的常用文件夹标签
         readonly FileView fileView = new FileView();
+        // 底部(卡片模式在右上角)的小提示条:"已删除 · 撤销"
+        string toastText;
+        Action toastUndo, toastCommit;
+        Rectangle toastRect, toastBtn;
+        readonly System.Windows.Forms.Timer toastTimer = new System.Windows.Forms.Timer();
         readonly WinButton pinBtn = new WinButton();
         readonly WinButton minBtn = new WinButton();
         readonly System.Windows.Forms.Timer glassTimer = new System.Windows.Forms.Timer();
@@ -7092,6 +7131,8 @@ namespace Glean
             };
             Controls.Add(pinBtn);
             Controls.Add(minBtn);
+            toastTimer.Interval = 6000;
+            toastTimer.Tick += delegate { CloseToast(true); };
             glassTimer.Interval = 90;
             glassTimer.Tick += delegate { glassTimer.Stop(); CaptureGlassNow(); };
             // 把文件夹从资源管理器拖进面板 = 添加为常用文件夹
@@ -7490,6 +7531,7 @@ namespace Glean
                     g.DrawLine(lp, Gfx.S(16), Height - Gfx.S(42), Width - Gfx.S(16), Height - Gfx.S(42));
                 int ly = Height - Gfx.S(21);
                 int lr = Width - Gfx.S(16);
+                if (toastText != null && !filesMode) { DrawToast(g, lr, ly); return; }
                 lr = Gfx.KeyHint(g, "Enter", filesMode ? "打开" : "粘贴", lr, ly);
                 lr = Gfx.KeyHint(g, "空格", "预览", lr - Gfx.S(14), ly);
                 Gfx.KeyHint(g, filesMode ? "Backspace" : "Tab", filesMode ? "上一级" : "分类", lr - Gfx.S(14), ly);
@@ -7501,6 +7543,7 @@ namespace Glean
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int cy = Gfx.S(14) + Gfx.S(18);
             int right = gear.Left - Gfx.S(16);
+            if (toastText != null && !filesMode) { DrawToast(g, right, cy); return; }
             right = Gfx.KeyHint(g, "Enter", filesMode ? "打开" : "粘贴", right, cy);
             Gfx.KeyHint(g, "空格", "预览", right - Gfx.S(16), cy);
         }
@@ -7604,6 +7647,7 @@ namespace Glean
         {
             if (!Visible || hiding) return;
             if (listMode) { HideNow(); return; }
+            CloseToast(true);
             quick.HideLook();
             hiding = true;
             StartSlide(Top, Screen.FromControl(this).Bounds.Bottom + Gfx.S(10), 220);
@@ -7611,6 +7655,7 @@ namespace Glean
 
         public void HideNow()
         {
+            CloseToast(true);
             keyPoll.Stop();
             slide.Stop();
             hiding = false;
@@ -7727,9 +7772,113 @@ namespace Glean
             Item it = Current();
             if (it == null) return;
             int i = strip.Selected;
-            hist.Remove(it);
+            CloseToast(true);   // 上一次的删除先真正完成
+            hist.RemoveUndoable(it);
             Reload(0);
             Reselect(null, i);
+            ShowToast("已删除", delegate
+            {
+                Item back = hist.UndoDelete();
+                Reload(0);
+                if (back != null) Reselect(back, i);
+            }, delegate { hist.FinishPendingDelete(); });
+        }
+
+        static List<string> IgnoreList()
+        {
+            return (Config.IgnoreApps ?? "").Split(new char[] { ',', ';', '，', '；' })
+                .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        }
+
+        static bool IgnoreMatch(string a, string exe)
+        {
+            string x = a.ToLowerInvariant();
+            if (x.EndsWith(".exe")) x = x.Substring(0, x.Length - 4);
+            return x == exe.ToLowerInvariant();
+        }
+
+        void IgnoreApp(string exe, string shownName)
+        {
+            List<string> list = IgnoreList();
+            if (!list.Any(a => IgnoreMatch(a, exe)))
+            {
+                list.Add(exe.ToLowerInvariant());
+                Config.IgnoreApps = string.Join(",", list.ToArray());
+                Config.Save();
+            }
+            ShowToast("不再记录「" + shownName + "」", delegate
+            {
+                Config.IgnoreApps = string.Join(",", IgnoreList().Where(a => !IgnoreMatch(a, exe)).ToArray());
+                Config.Save();
+            }, null);
+        }
+
+        // ---------------- 提示条
+        void ShowToast(string text, Action undo, Action commit)
+        {
+            CloseToast(true);   // 上一个提示的操作就此生效
+            toastText = text;
+            toastUndo = undo;
+            toastCommit = commit;
+            toastTimer.Stop();
+            toastTimer.Start();
+            Invalidate();
+        }
+
+        // commit=true:时间到了,操作生效;false:点了撤销
+        void CloseToast(bool commit)
+        {
+            toastTimer.Stop();
+            if (toastText == null) return;
+            Action a = commit ? toastCommit : toastUndo;
+            toastText = null;
+            toastUndo = toastCommit = null;
+            toastRect = toastBtn = Rectangle.Empty;
+            Invalidate();
+            if (a != null) { try { a(); } catch { } }
+        }
+
+        public bool UndoLast()
+        {
+            if (toastText == null || toastUndo == null) return false;
+            CloseToast(false);
+            return true;
+        }
+
+        // 画提示条:右端对齐 right,竖直居中在 cy
+        void DrawToast(Graphics g, int right, int cy)
+        {
+            Theme t = Theme.Cur;
+            const TextFormatFlags nf = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+            string undo = "撤销";
+            string key = "Ctrl+Z";
+            int tw = TextRenderer.MeasureText(toastText, Gfx.UI, Size.Empty, nf).Width;
+            int uw = TextRenderer.MeasureText(undo, Gfx.Bold, Size.Empty, nf).Width;
+            int kw = TextRenderer.MeasureText(key, Gfx.Small, Size.Empty, nf).Width;
+            int h = Gfx.S(30), padX = Gfx.S(14), gap = Gfx.S(12);
+            int w = padX + Gfx.S(16) + Gfx.S(8) + tw + gap + Gfx.S(1) + gap + uw + Gfx.S(6) + kw + padX;
+            Rectangle r = new Rectangle(right - w, cy - h / 2, w, h);
+            toastRect = r;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Gfx.FillRound(g, t.Input, r, 99);
+            Gfx.DrawRound(g, Color.FromArgb(t.Dark ? 40 : 28, t.Text), r, 99, Gfx.F(1f));
+            int x = r.X + padX;
+            // 小勾
+            using (Pen p = new Pen(t.Accent, Gfx.F(1.8f)))
+            {
+                p.StartCap = p.EndCap = LineCap.Round;
+                p.LineJoin = LineJoin.Round;
+                g.DrawLines(p, new Point[] { new Point(x + Gfx.S(2), cy), new Point(x + Gfx.S(6), cy + Gfx.S(4)), new Point(x + Gfx.S(14), cy - Gfx.S(4)) });
+            }
+            x += Gfx.S(16) + Gfx.S(8);
+            TextRenderer.DrawText(g, toastText, Gfx.UI, new Rectangle(x, r.Y, tw + 2, h), t.Text, nf | TextFormatFlags.VerticalCenter);
+            x += tw + gap;
+            using (Pen sp = new Pen(Color.FromArgb(t.Dark ? 50 : 40, t.Text))) g.DrawLine(sp, x, r.Y + Gfx.S(8), x, r.Bottom - Gfx.S(8));
+            x += Gfx.S(1) + gap;
+            toastBtn = new Rectangle(x - Gfx.S(8), r.Y, r.Right - x + Gfx.S(8), h);
+            TextRenderer.DrawText(g, undo, Gfx.Bold, new Rectangle(x, r.Y, uw + 2, h), t.Accent, nf | TextFormatFlags.VerticalCenter);
+            x += uw + Gfx.S(6);
+            TextRenderer.DrawText(g, key, Gfx.Small, new Rectangle(x, r.Y, kw + 2, h), t.Sub, nf | TextFormatFlags.VerticalCenter);
         }
 
         void CycleTab(int d)
@@ -7866,6 +8015,17 @@ namespace Glean
             colorMenu.DropDownItems.Add("自定义颜色…", null, delegate { PickCardColor(it); });
             colorMenu.DropDownItems.Add("恢复默认", null, delegate { SetCardColor(it, 0); });
             m.Items.Add(colorMenu);
+
+            // 不再记录这个程序复制的内容(加进设置里的忽略名单)
+            string exe = null;
+            try { if (!string.IsNullOrEmpty(it.AppPath)) exe = System.IO.Path.GetFileNameWithoutExtension(it.AppPath); } catch { exe = null; }
+            if (!string.IsNullOrEmpty(exe) && !string.Equals(exe, System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+            {
+                string shownName = string.IsNullOrEmpty(it.AppName) ? exe : it.AppName;
+                if (shownName.Length > 16) shownName = shownName.Substring(0, 15) + "…";
+                m.Items.Add(new ToolStripSeparator());
+                m.Items.Add("不再记录「" + shownName + "」的内容", null, delegate { IgnoreApp(exe, shownName); });
+            }
 
             m.Items.Add(new ToolStripSeparator());
             m.Items.Add("删除", null, delegate { DeleteSelected(); });
@@ -8566,6 +8726,7 @@ namespace Glean
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            if (toastText != null && e.Button == MouseButtons.Left && toastBtn.Contains(e.Location)) { UndoLast(); return; }
             if (BeginWindowDrag(e)) return;
             if (listMode || e.Button != MouseButtons.Left || e.Y >= GripH) return;
             if (e.Clicks >= 2) { SetZoom(1f, true); return; }   // 双击小横条恢复默认大小
@@ -8579,6 +8740,7 @@ namespace Glean
         {
             base.OnMouseMove(e);
             if (DoWindowDrag()) return;
+            if (toastText != null && toastBtn.Contains(e.Location)) { Cursor = Cursors.Hand; return; }
             if (FolderWindow) { Cursor = CursorFor(EdgeAt(e.Location)); return; }
             if (resizing)
             {
@@ -8643,6 +8805,8 @@ namespace Glean
                 uint vk = Native.MapVirtualKey(scan, 1);   // MAPVK_VSC_TO_VK
                 if (vk != 0) real = (Keys)vk | (keyData & Keys.Modifiers);
             }
+            // Ctrl+Z:撤销刚才的删除 / 屏蔽(搜索框里有字时,留给搜索框自己撤销输入)
+            if (real == (Keys.Z | Keys.Control) && (onCards || sb.Box.Text.Length == 0) && UndoLast()) return true;
             // 空格 = 快速预览(焦点在卡片上时)
             if (onCards && real == Keys.Space)
             {
@@ -9273,7 +9437,9 @@ namespace Glean
         readonly ShelfForm shelf;
         readonly NotifyIcon tray;
         ToolStripMenuItem openItem;
-        bool paused;
+        DateTime pausedUntil = DateTime.MinValue;   // 暂停记录到这个时间;MaxValue = 一直暂停
+        bool paused { get { return DateTime.Now < pausedUntil; } }
+        readonly System.Windows.Forms.Timer pauseTimer = new System.Windows.Forms.Timer();
         bool hotkeyOk;
         bool settingsOpen;
         DateTime ignoreUntil = DateTime.MinValue;
@@ -9298,6 +9464,12 @@ namespace Glean
                 if (e.Button == MouseButtons.Left) TogglePopup(false);
             };
             tray.Visible = true;
+            pauseTimer.Tick += delegate
+            {
+                if (pausedUntil != DateTime.MinValue && !paused) SetPause(TimeSpan.Zero);
+            };
+            // 退出前,把还能撤销的删除真正完成
+            Application.ApplicationExit += delegate { try { hist.FinishPendingDelete(); } catch { } };
 
             // 如果开过开机自启,把启动项更新成当前这个 exe 的位置(换名字/换文件夹后也能正常自启)
             try { if (Startup.Get()) Startup.Set(true); } catch { }
@@ -9341,9 +9513,11 @@ namespace Glean
             base.SetVisibleCore(false);
         }
 
-        static string TrayTip()
+        string TrayTip()
         {
-            return Brand.Name + " " + Brand.NameCn + "  v" + Config.Version + "  ·  " + Config.HotkeyText + (Config.WinV ? " / Win+V" : "");
+            string s = Brand.Name + " " + Brand.NameCn + "  v" + Config.Version + "  ·  " + Config.HotkeyText + (Config.WinV ? " / Win+V" : "");
+            if (paused) s = Brand.Name + " " + Brand.NameCn + "  ·  已暂停记录";
+            return s.Length > 63 ? s.Substring(0, 63) : s;   // 托盘提示最多 63 个字
         }
 
         ContextMenuStrip BuildMenu()
@@ -9358,8 +9532,6 @@ namespace Glean
             m.Items.Add(new ToolStripSeparator());
 
             ToolStripMenuItem pause = new ToolStripMenuItem("暂停记录");
-            pause.CheckOnClick = true;
-            pause.Click += delegate { paused = pause.Checked; };
             m.Items.Add(pause);
 
             ToolStripMenuItem auto = new ToolStripMenuItem("开机自动启动");
@@ -9389,11 +9561,67 @@ namespace Glean
 
             m.Opening += delegate
             {
+                BuildPauseMenu(pause);
                 auto.Checked = Startup.Get();
                 Theme.Refresh();
                 Theme.StyleMenu(m);
             };
             return m;
+        }
+
+        // 暂停记录:可以选一段时间,到点自动恢复
+        void BuildPauseMenu(ToolStripMenuItem pause)
+        {
+            pause.DropDownItems.Clear();
+            if (paused)
+            {
+                pause.Text = "已暂停记录" + PauseLeftText();
+                pause.Checked = true;
+                pause.DropDownItems.Add("恢复记录", null, delegate { SetPause(TimeSpan.Zero); });
+                pause.DropDownItems.Add(new ToolStripSeparator());
+            }
+            else
+            {
+                pause.Text = "暂停记录";
+                pause.Checked = false;
+            }
+            pause.DropDownItems.Add("暂停 5 分钟", null, delegate { SetPause(TimeSpan.FromMinutes(5)); });
+            pause.DropDownItems.Add("暂停 30 分钟", null, delegate { SetPause(TimeSpan.FromMinutes(30)); });
+            pause.DropDownItems.Add("暂停 1 小时", null, delegate { SetPause(TimeSpan.FromHours(1)); });
+            pause.DropDownItems.Add("暂停到明天", null, delegate { SetPause(DateTime.Today.AddDays(1) - DateTime.Now); });
+            pause.DropDownItems.Add("一直暂停(手动恢复)", null, delegate { SetPause(TimeSpan.MaxValue); });
+        }
+
+        string PauseLeftText()
+        {
+            if (pausedUntil == DateTime.MaxValue) return "";
+            TimeSpan left = pausedUntil - DateTime.Now;
+            if (left.TotalMinutes < 1) return "(不到 1 分钟后恢复)";
+            if (left.TotalMinutes < 60) return "(" + (int)Math.Ceiling(left.TotalMinutes) + " 分钟后恢复)";
+            return "(" + pausedUntil.ToString("HH:mm", CultureInfo.InvariantCulture) + " 恢复)";
+        }
+
+        void SetPause(TimeSpan span)
+        {
+            pauseTimer.Stop();
+            if (span <= TimeSpan.Zero)
+            {
+                pausedUntil = DateTime.MinValue;
+                tray.Text = TrayTip();
+                tray.ShowBalloonTip(2000, Brand.Name, "已恢复记录剪切板", ToolTipIcon.Info);
+                return;
+            }
+            pausedUntil = span == TimeSpan.MaxValue ? DateTime.MaxValue : DateTime.Now + span;
+            string tip = pausedUntil == DateTime.MaxValue ? "已暂停记录,右键托盘图标可恢复"
+                : "已暂停记录,将在 " + pausedUntil.ToString("HH:mm", CultureInfo.InvariantCulture) + " 自动恢复";
+            tray.Text = TrayTip();
+            tray.ShowBalloonTip(2500, Brand.Name, tip, ToolTipIcon.Info);
+            if (pausedUntil != DateTime.MaxValue)
+            {
+                // 到点自动恢复(每 30 秒看一眼,电脑睡眠醒来也不会错过)
+                pauseTimer.Interval = 30 * 1000;
+                pauseTimer.Start();
+            }
         }
 
         static Icon MakeIcon()

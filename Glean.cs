@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.4.0.0")]
-[assembly: AssemblyFileVersion("0.4.0.0")]
+[assembly: AssemblyVersion("0.5.0.0")]
+[assembly: AssemblyFileVersion("0.5.0.0")]
 
 namespace Glean
 {
@@ -66,7 +66,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.4";
+        public const string Version = "0.5";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -424,7 +424,7 @@ namespace Glean
 
         public static Theme Cur = Make(false, 0);
 
-        static Theme Make(bool dark, int accent)
+        public static Theme Make(bool dark, int accent)
         {
             Theme t = new Theme();
             t.Dark = dark;
@@ -2023,6 +2023,7 @@ namespace Glean
     class Swatches : Control
     {
         public int Selected;
+        public event EventHandler Changed;
         int hover = -1;
 
         public Swatches()
@@ -2098,7 +2099,7 @@ namespace Glean
         {
             base.OnMouseClick(e);
             int i = Hit(e.Location);
-            if (i >= 0) { Selected = i; Invalidate(); }
+            if (i >= 0 && i != Selected) { Selected = i; Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty); }
         }
     }
 
@@ -3789,6 +3790,10 @@ namespace Glean
             BuildStorage(pages[4]);
             BuildAbout(pages[5]);
 
+            // 切换浅色 / 深色 / 主题色时,设置窗口立刻换成对应的样子
+            themeSeg.Changed += delegate { PreviewTheme(); };
+            accent.Changed += delegate { PreviewTheme(); };
+
             // ---- 底部按钮(放在右侧内容区的右下角)
             Btn ok = new Btn();
             ok.Text = "完成";
@@ -3810,6 +3815,54 @@ namespace Glean
         {
             base.OnHandleCreated(e);
             Native.DarkTitle(Handle, Theme.Cur.Dark);   // 深色模式下标题栏也是深色
+        }
+
+        // ---------------- 主题实时预览
+        static Color[] PaletteNow()
+        {
+            Theme t = Theme.Cur;
+            return new Color[] { SetPal.Back, SetPal.Side, SetPal.Card, SetPal.Sep,
+                t.Text, t.Sub, t.Bg, t.Hover, t.Input, t.Border, t.Card, t.Shelf, t.Accent };
+        }
+
+        void PreviewTheme()
+        {
+            Color[] before = PaletteNow();
+            int m = themeSeg.Selected;
+            bool dark = m == 2 || (m == 0 && Theme.SystemDark());
+            Theme.Cur = Theme.Make(dark, accent.Selected);
+            Color[] after = PaletteNow();
+            Dictionary<int, Color> map = new Dictionary<int, Color>();
+            for (int i = 0; i < before.Length; i++)
+            {
+                int k = before[i].ToArgb();
+                if (!map.ContainsKey(k)) map[k] = after[i];
+            }
+            SuspendLayout();
+            Remap(this, map);
+            ResumeLayout();
+            Native.DarkTitle(Handle, dark);
+            // 让标题栏立刻重画成新颜色
+            Width += 1; Width -= 1;
+            Invalidate(true);
+            Update();
+        }
+
+        static void Remap(Control c, Dictionary<int, Color> map)
+        {
+            Color v;
+            if (map.TryGetValue(c.BackColor.ToArgb(), out v)) c.BackColor = v;
+            if (map.TryGetValue(c.ForeColor.ToArgb(), out v)) c.ForeColor = v;
+            SearchBox sb = c as SearchBox;
+            if (sb != null) sb.ApplyTheme();
+            foreach (Control ch in c.Controls) Remap(ch, map);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            // 点了取消:预览过的主题不算数,恢复原来的
+            if (DialogResult != DialogResult.OK) Theme.Refresh();
+            base.OnFormClosed(e);
         }
 
         // ---------------- 页面
@@ -8785,10 +8838,148 @@ namespace Glean
     }
 
     // 更新窗口:显示新版本说明,下载进度,一键安装
+    // 更新说明:自己画的文字区,细细的圆角滚动条跟随主题色调,不用系统那根白色滚动条
+    class NotesView : Control
+    {
+        string text = "";
+        int scroll, contentH;
+        bool hot, dragging;
+        int dragY, dragScroll;
+        const TextFormatFlags Flags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix |
+                                      TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding;
+
+        public NotesView()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        }
+
+        // 把 Markdown 记号去掉,显示成干净的文字
+        public static string Plain(string s)
+        {
+            s = Regex.Replace(s, @"\*\*(.+?)\*\*", "$1");
+            s = Regex.Replace(s, @"__(.+?)__", "$1");
+            s = Regex.Replace(s, @"`([^`]*)`", "$1");
+            s = Regex.Replace(s, @"(?m)^[ \t]*#+[ \t]*", "");
+            s = Regex.Replace(s, @"(?m)^([ \t]*)[-*+][ \t]+", "$1•  ");
+            s = Regex.Replace(s, @"\r?\n", "\r\n");
+            return s.Trim();
+        }
+
+        public string Notes
+        {
+            get { return text; }
+            set { text = value ?? ""; scroll = 0; Measure(); Invalidate(); }
+        }
+
+        int TextW { get { return Math.Max(10, Width - Gfx.S(18)); } }
+        int MaxScroll { get { return Math.Max(0, contentH - Height); } }
+
+        void Measure()
+        {
+            contentH = text.Length == 0 ? 0 :
+                TextRenderer.MeasureText(text, Font, new Size(TextW, int.MaxValue), Flags).Height + Gfx.S(6);
+            scroll = Math.Max(0, Math.Min(MaxScroll, scroll));
+        }
+
+        protected override void OnResize(EventArgs e) { base.OnResize(e); Measure(); }
+        protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); Measure(); }
+
+        Rectangle Thumb()
+        {
+            if (MaxScroll <= 0) return Rectangle.Empty;
+            int th = Math.Max(Gfx.S(28), Height * Height / Math.Max(1, contentH));
+            int ty = (Height - th) * scroll / MaxScroll;
+            int w = Gfx.S(hot || dragging ? 6 : 4);
+            return new Rectangle(Width - Gfx.S(3) - w, ty, w, th);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(BackColor);
+            TextRenderer.DrawText(g, text, Font, new Rectangle(0, -scroll, TextW, contentH + Gfx.S(20)), ForeColor, BackColor, Flags);
+            Rectangle th = Thumb();
+            if (!th.IsEmpty)
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                Gfx.FillRound(g, Color.FromArgb(hot || dragging ? 120 : 70, ForeColor), th, hot || dragging ? 3 : 2);
+            }
+        }
+
+        void ScrollTo(int v)
+        {
+            v = Math.Max(0, Math.Min(MaxScroll, v));
+            if (v != scroll) { scroll = v; Invalidate(); }
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            ScrollTo(scroll - e.Delta * Gfx.S(48) / 120);
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            hot = true; Invalidate();
+            Focus();   // 鼠标放上来就能直接滚轮
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            hot = false; Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (MaxScroll <= 0 || e.X < Width - Gfx.S(16)) return;
+            Rectangle th = Thumb();
+            if (e.Y < th.Top || e.Y > th.Bottom)   // 点在滑槽上:跳到那里
+                ScrollTo(MaxScroll * (e.Y - th.Height / 2) / Math.Max(1, Height - th.Height));
+            dragging = true;
+            dragY = e.Y;
+            dragScroll = scroll;
+            Capture = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!dragging) return;
+            int track = Math.Max(1, Height - Thumb().Height);
+            ScrollTo(dragScroll + (e.Y - dragY) * MaxScroll / track);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (dragging) { dragging = false; Capture = false; Invalidate(); }
+        }
+
+        protected override bool IsInputKey(Keys k)
+        {
+            return k == Keys.Up || k == Keys.Down || base.IsInputKey(k);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            int line = Font.Height;
+            if (e.KeyCode == Keys.Down) ScrollTo(scroll + line);
+            else if (e.KeyCode == Keys.Up) ScrollTo(scroll - line);
+            else if (e.KeyCode == Keys.PageDown) ScrollTo(scroll + Height - line);
+            else if (e.KeyCode == Keys.PageUp) ScrollTo(scroll - Height + line);
+        }
+    }
+
     class UpdateForm : Form
     {
         readonly UpdateInfo info;
-        readonly TextBox notes = new TextBox();
+        readonly NotesView notes = new NotesView();
         readonly Btn btnGo = new Btn();
         readonly Btn btnLater = new Btn();
         readonly Label status;
@@ -8814,15 +9005,11 @@ namespace Glean
             AddLabel("发现新版本", Gfx.S(112), Gfx.S(30), SetPal.PageTitle, t.Text);
             AddLabel(Brand.Name + " " + u.Tag.TrimStart('v', 'V') + "  ·  当前 " + Config.Version, Gfx.S(114), Gfx.S(68), Gfx.Small, t.Sub);
 
-            notes.Multiline = true;
-            notes.ReadOnly = true;
-            notes.BorderStyle = BorderStyle.None;
-            notes.ScrollBars = ScrollBars.Vertical;
             notes.BackColor = SetPal.Card;
             notes.ForeColor = t.Text;
             notes.Font = Gfx.UI;
-            notes.Text = u.Notes.Length > 0 ? Regex.Replace(u.Notes, "\r?\n", "\r\n") : "这个版本没有写更新说明。";
-            notes.SetBounds(Gfx.S(40), Gfx.S(122), ClientSize.Width - Gfx.S(80), Gfx.S(176));
+            notes.SetBounds(Gfx.S(40), Gfx.S(122), ClientSize.Width - Gfx.S(80) + Gfx.S(8), Gfx.S(176));
+            notes.Notes = u.Notes.Length > 0 ? NotesView.Plain(u.Notes) : "这个版本没有写更新说明。";
             Controls.Add(notes);
 
             status = AddLabel("更新后历史记录和设置都会保留。", Gfx.S(32), Gfx.S(318), Gfx.Small, t.Sub);

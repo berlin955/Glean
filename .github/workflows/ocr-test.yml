@@ -17,8 +17,10 @@ jobs:
       - name: decode QR
         shell: pwsh
         run: |
-          python -m pip install -q opencv-python-headless
+          python -m pip install -q opencv-python-headless segno pyzbar pillow
           python decode.py
+          python compare.py
+          python decode2.py
       - uses: actions/upload-artifact@v4
         with:
           name: qr

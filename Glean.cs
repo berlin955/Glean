@@ -734,40 +734,91 @@ namespace Glean
         }
 
         // 当前剪切板内容来自哪个程序:返回 exe 路径和显示名称
-        // 进程 → (程序路径, 显示名);读进程信息比较慢(尤其是读不到时会抛异常),同一个程序只查一次
-        static readonly Dictionary<uint, KeyValuePair<string, string>> ownerCache = new Dictionary<uint, KeyValuePair<string, string>>();
+        // 进程 → (程序路径, 显示名, 进程名);读进程信息比较慢,同一个程序只查一次
+        static readonly Dictionary<uint, string[]> ownerCache = new Dictionary<uint, string[]>();
 
-        public static void ClipboardOwnerApp(out string path, out string name)
+        // 会把剪切板内容"转手"再写一遍的程序(远程控制、虚拟机的剪切板同步)。
+        // 它们会变成剪切板的"主人",但内容其实来自你正在用的那个窗口
+        static readonly HashSet<string> RelayApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            path = null;
-            name = null;
-            IntPtr w = Native.GetClipboardOwner();
-            if (w == IntPtr.Zero) return;
+            "todesk", "todesk_service", "todesk_lite", "sunloginclient", "sunloginremote", "slrc", "awesun", "oray",
+            "teamviewer", "teamviewer_service", "tv_w32", "tv_x64", "anydesk", "rustdesk", "parsecd", "parsec",
+            "rdpclip", "remoting_host", "remoting_desktop", "splashtop", "srstreamer", "uuremote", "gameviewer",
+            "vmtoolsd", "vboxtray", "vboxclient", "prl_cc", "ditto"
+        };
+
+        public static bool IsRelay(string exeOrPath)
+        {
+            if (string.IsNullOrEmpty(exeOrPath)) return false;
+            string n;
+            try { n = System.IO.Path.GetFileNameWithoutExtension(exeOrPath); } catch { n = exeOrPath; }
+            return RelayApps.Contains(n);
+        }
+
+        static uint PidOf(IntPtr w)
+        {
+            if (w == IntPtr.Zero) return 0;
             uint pid;
             Native.GetWindowThreadProcessId(w, out pid);
-            if (pid == 0) return;
-            KeyValuePair<string, string> hit;
+            return pid;
+        }
+
+        static string[] Lookup(uint pid)
+        {
+            string[] hit;
             lock (ownerCache)
             {
-                if (ownerCache.TryGetValue(pid, out hit)) { path = hit.Key; name = hit.Value; return; }
+                if (ownerCache.TryGetValue(pid, out hit)) return hit;
             }
-            LookupOwner(pid, out path, out name);
+            string path, name, exe;
+            LookupOwner(pid, out path, out name, out exe);
+            hit = new string[] { path, name, exe };
             lock (ownerCache)
             {
                 if (ownerCache.Count > 200) ownerCache.Clear();
-                ownerCache[pid] = new KeyValuePair<string, string>(path, name);
+                ownerCache[pid] = hit;
+            }
+            return hit;
+        }
+
+        // 真正的来源程序:一般是剪切板的"主人";主人是转手程序或者查不到时,用你按 Ctrl+C 时所在的窗口
+        public static void ClipboardSource(out string path, out string name, out string exe)
+        {
+            path = name = exe = null;
+            uint pid = PidOf(Native.GetClipboardOwner());
+            if (pid != 0)
+            {
+                string[] o = Lookup(pid);
+                path = o[0]; name = o[1]; exe = o[2];
+            }
+            if (pid == 0 || IsRelay(exe) || IsRelay(path))
+            {
+                uint fp = PidOf(Native.GetForegroundWindow());
+                if (fp != 0 && fp != (uint)Process.GetCurrentProcess().Id)
+                {
+                    string[] f = Lookup(fp);
+                    if (f[0] != null || f[2] != null) { path = f[0]; name = f[1]; exe = f[2]; }
+                }
             }
         }
 
-        static void LookupOwner(uint pid, out string path, out string name)
+        public static void ClipboardOwnerApp(out string path, out string name)
+        {
+            string exe;
+            ClipboardSource(out path, out name, out exe);
+        }
+
+        static void LookupOwner(uint pid, out string path, out string name, out string exe)
         {
             path = null;
             name = null;
+            exe = null;
             try
             {
                 using (Process p = Process.GetProcessById((int)pid))
                 {
                     name = p.ProcessName;
+                    exe = p.ProcessName;
                     try { path = p.MainModule.FileName; } catch { path = null; }
                 }
                 if (path != null)
@@ -1515,6 +1566,7 @@ namespace Glean
             {
                 it.AppPath = m[0].Length > 0 ? m[0] : null;
                 it.AppName = m[1].Length > 0 ? m[1] : null;
+                if (Util.IsRelay(it.AppPath)) { it.AppPath = null; it.AppName = null; }   // 以前被记成远程控制软件的,不显示错的图标
                 int cc;
                 it.CustomColor = (m.Length > 2 && int.TryParse(m[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out cc)) ? cc : 0;
                 it.Board = (m.Length > 3 && m[3].Length > 0) ? m[3] : null;
@@ -8116,7 +8168,8 @@ namespace Glean
             // 不再记录这个程序复制的内容(加进设置里的忽略名单)
             string exe = null;
             try { if (!string.IsNullOrEmpty(it.AppPath)) exe = System.IO.Path.GetFileNameWithoutExtension(it.AppPath); } catch { exe = null; }
-            if (!string.IsNullOrEmpty(exe) && !string.Equals(exe, System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(exe) && !Util.IsRelay(exe) &&
+                !string.Equals(exe, System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase))
             {
                 string shownName = string.IsNullOrEmpty(it.AppName) ? exe : it.AppName;
                 if (shownName.Length > 16) shownName = shownName.Substring(0, 15) + "…";
@@ -10257,12 +10310,12 @@ namespace Glean
             {
                 string list = Config.IgnoreApps;
                 if (string.IsNullOrWhiteSpace(list)) return false;
-                IntPtr w = Native.GetClipboardOwner();
-                if (w == IntPtr.Zero) return false;
-                uint pid;
-                Native.GetWindowThreadProcessId(w, out pid);
-                if (pid == 0) return false;
-                string name = Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant();
+                // 用真正的来源程序判断(远程控制软件转手写入剪切板时,看的是你实际复制的那个程序)
+                string path, disp, exe;
+                Util.ClipboardSource(out path, out disp, out exe);
+                if (exe == null && path != null) exe = System.IO.Path.GetFileNameWithoutExtension(path);
+                if (exe == null) return false;
+                string name = exe.ToLowerInvariant();
                 foreach (string a in list.Split(new char[] { ',', ';', '，', '；' }))
                 {
                     string x = a.Trim().ToLowerInvariant();

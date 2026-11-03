@@ -8977,7 +8977,6 @@ namespace Glean
     {
         static int state;   // 0 还没检查  1 可用  -1 不可用
         public static double Upscale = 0;     // 放大倍数(0 = 按屏幕缩放自动决定)
-        public static bool Gray = false;
         static MethodInfo asTaskOp;
 
         static Type WinRT(string name)
@@ -9049,12 +9048,49 @@ namespace Glean
         // 数字中间被认成全角点或间隔号的小数点:128 ． 5 → 128.5
         static readonly Regex DigitDot = new Regex(@"(?<=\d)[ \t]*[\uFF0E\u00B7\u30FB][ \t]*(?=\d)");
 
+        // 英文里被认成全角的标点:"12345，version" → "12345, version"
+        static readonly Regex AsciiPunct = new Regex(@"(?<=[A-Za-z0-9])[ \t]*([\uFF0C\uFF1A\uFF1B\uFF01\uFF1F])[ \t]*(?=[A-Za-z])");
+        // 中文后面、半角标点前面多出的空格:"文字 :Windows" → "文字:Windows"
+        static readonly Regex CjkAsciiPunct = new Regex(@"(?<=[\u2E80-\u9FFF\uF900-\uFAFF])[ \t]+(?=[:;,.!?])");
+
         public static string Tidy(string s)
         {
             s = CjkGap.Replace(s, "");
             s = DigitDot.Replace(s, ".");
             s = PunctGap.Replace(s, "");
+            s = AsciiPunct.Replace(s, delegate(Match m)
+            {
+                string c = m.Groups[1].Value;
+                string a = c == "\uFF0C" ? "," : c == "\uFF1A" ? ":" : c == "\uFF1B" ? ";" : c == "\uFF01" ? "!" : "?";
+                return a + " ";
+            });
+            s = CjkAsciiPunct.Replace(s, "");
+            // 行首的项目符号常被认成全角点
+            s = Regex.Replace(s, @"^[\uFF0E\u00B7\u30FB\u2022][ \t]*(?=\S)", "• ");
+            // 中文旁边的英文引号多出的空格:的 " 文件夹 " 变成 → 的"文件夹"变成
+            s = Regex.Replace(s, @"(?<=[\u2E80-\u9FFF])[ \t]*""[ \t]*", "\"");
+            s = Regex.Replace(s, @"[ \t]*""[ \t]*(?=[\u2E80-\u9FFF])", "\"");
+            // 被拆成"偏旁 + 部件"的字合回去(这些偏旁单独出现在正常文字里的情况极少)
+            foreach (KeyValuePair<string, string> kv in SplitFix)
+                if (s.IndexOf(kv.Key, StringComparison.Ordinal) >= 0) s = s.Replace(kv.Key, kv.Value);
             return s.Trim();
+        }
+
+        // 只收"单独出现几乎不可能"的偏旁(亻讠氵扌…和右边的刂攵阝),普通字的组合(如"日月")不动,避免误改
+        static readonly KeyValuePair<string, string>[] SplitFix = BuildSplitFix(
+            "亻主住 亻尔你 亻门们 亻也他 亻故做 亻乍作 亻更便 亻吏使 亻立位 亻本体 亻可何 亻旦但 亻氐低 亻氏低 亻言信 亻牛件 亻介价 亻分份 亻壬任 亻木休 亻衣依 亻呆保 亻建健 亻亭停 亻共供 亻直值 亻扁偏 亻昔借 亻专传 亻尤优 亻韦伟 亻列例 亻匕化 亻十什 亻寸付 亻弋代 亻又仅 亻火伙 亻古估 亻圭佳 亻则侧 亻谷俗 彳亍行 彳寺待 彳艮很 彳主往 彳正征 彳走徒 冫欠次 冫令冷 冫隹准 冫夬决 冫咸减 冫兄况 冫水冰 冫中冲 冫争净 冫京凉 讠兑说 讠青请 讠吾语 讠十计 讠己记 讠人认 讠只识 讠舌话 讠周调 讠殳设 讠式试 讠义议 讠寸讨 讠方访 讠吴误 讠卖读 讠果课 讠午许 讠仑论 讠者诸 讠平评 讠羊详 讠炎谈 讠秀诱 讠亥该 讠正证 讠上让 讠川训 讠丁订 讠斥诉 讠司词 讠圣译 讠射谢 讠隹谁 讠胃谓 讠普谱 讠成诚 氵肖消 氵去法 氵青清 氵每海 氵十汁 氵也池 氵由油 氵告浩 氵寅演 氵吉洁 氵良浪 氵则测 氵舌活 氵原源 氵票漂 氵骨滑 氵殳没 氵工江 氵可河 氵先洗 氵皮波 氵主注 氵目泪 氵羊洋 氵又汉 氵少沙 氵齐济 氵胡湖 氵斩渐 氵昆混 氵气汽 氵台治 氵勾沟 氵包泡 扌丁打 扌巴把 扌安按 扌是提 扌妾接 扌由抽 扌白拍 扌乇托 扌巨拒 扌寺持 扌叟搜 扌罢摆 扌番播 扌兆挑 扌立拉 扌合拾 扌支技 扌斤折 扌并拼 扌召招 扌奂换 扌甬捅 扌殳投 扌戈找 扌旨指 扌包抱 扌察擦 扌非排 扌用拥 扌圭挂 扌广扩 扌旦担 扌户护 扌受授 扌卓掉 扌隹推 扌苗描 扌发拨 钅艮银 钅昔错 钅失铁 钅肖销 钅建键 钅连链 钅冈钢 钅中钟 钅戋钱 钅竟镜 钅丑钮 钅十针 纟及级 纟田细 纟冬终 纟会绘 纟吉结 纟色绝 纟合给 纟充统 纟扁编 纟屯纯 纟氏纸 纟千纤 纟工红 纟彖缘 纟东练 纟戋线 纟且组 纟圣经 纟责绩 纟宗综 纟录绿 纟勺约 纟己纪 纟卖续 纟隹维 纟宿缩 纟召绍 饣反饭 饣欠饮 饣并饼 饣包饱 饣官馆 饣我饿 犭苗猫 犭句狗 犭良狼 犭者猪 犭虫独 犭王狂 忄青情 忄亡忙 忄夬快 忄生性 忄曼慢 忄董懂 忄白怕 忄昔惜 忄艮恨 忄感憾 忄不怀 忄肖悄 礻申神 礻兄祝 礻斤祈 礻畐福 礻土社 礻见视 礻且祖 衤寸衬 衤刀初 衤皮被 衤卜补 衤由袖 衤库裤 阝方防 阝东陈 阝余除 阝完院 阝艮限 阝付附 阝人队 阝介阶 阝示际 阝且阻 阝击陆 阝日阳 阝月阴 另刂别 至刂到 歹刂列 禾刂利 冈刂刚 半刂判 居刂剧 亥刂刻 贝刂则 舌刂刮 干刂刊 乘刂剩 畐刂副 害刂割 者阝都 由阝邮 交阝郊 令阝邻 良阝郎 方攵放 己攵改 正攵政 古攵故 交攵效 娄攵数 孝攵教 苟攵敬 求攵救");
+
+        static KeyValuePair<string, string>[] BuildSplitFix(string table)
+        {
+            List<KeyValuePair<string, string>> list = new List<KeyValuePair<string, string>>();
+            HashSet<string> seen = new HashSet<string>();
+            foreach (string tok in table.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (tok.Length != 3) continue;
+                string key = tok.Substring(0, 2);
+                if (seen.Add(key)) list.Add(new KeyValuePair<string, string>(key, tok.Substring(2)));
+            }
+            return list.ToArray();
         }
 
         // 在后台线程调用。noChinese = true 表示系统没有中文识别组件,这次只按其他语言(一般是英文)识别
@@ -9095,50 +9131,127 @@ namespace Glean
                 noChinese = true;
             }
 
-            // 2) 准备图片:透明底铺白;小图放大一倍(小字更容易认),太大的按系统上限缩小
+            // 2) 先按屏幕缩放估一个放大倍数识别一遍,量出字的实际高度;
+            //    字太大或太小(容易把"住"拆成"亻主")就按理想字高重新缩放,再识别一遍
             uint maxDim = 10000;
             try { maxDim = Convert.ToUInt32(tEngine.GetProperty("MaxImageDimension").GetValue(null, null)); } catch { }
+            using (Bitmap src = Util.LoadBitmap(imagePath))
+            {
+                bool invert = InvertDark && LooksDark(src);
+                double k0 = Upscale > 0 ? Upscale : Math.Max(1.0, Math.Min(2.0, 2.0 / Math.Max(0.5, (double)Gfx.Scale)));
+                k0 = Fit(src, k0, maxDim);
+                double height;
+                List<string> lines = RunOnce(engine, src, k0, invert, out height);
+                if (Adaptive && lines.Count > 0 && height > 0)
+                {
+                    double k1 = Fit(src, Math.Max(0.5, Math.Min(3.0, k0 * TargetHeight / height)), maxDim);
+                    if (Math.Abs(k1 / k0 - 1) > 0.15)
+                    {
+                        double h1;
+                        List<string> again = RunOnce(engine, src, k1, invert, out h1);
+                        if (again.Count > 0) lines = again;
+                    }
+                }
+                StringBuilder sb = new StringBuilder();
+                foreach (string l in lines)
+                {
+                    string x = Tidy(l ?? "");
+                    if (x.Length == 0) continue;
+                    if (sb.Length > 0) sb.Append("\r\n");
+                    sb.Append(x);
+                }
+                return sb.ToString();
+            }
+        }
+
+        public static bool Adaptive = true;       // 按实际字高重新缩放
+        public static bool InvertDark = true;     // 深色背景先反色成白底黑字
+        public static double TargetHeight = 24;   // 识别效果最好的字高(像素)
+
+        static double Fit(Bitmap src, double k, uint maxDim)
+        {
+            double limit = maxDim * 0.98;
+            int big = Math.Max(src.Width, src.Height);
+            if (big * k > limit) k = limit / big;
+            return k;
+        }
+
+        // 抽样判断是不是深色背景(深色模式的截图)
+        static bool LooksDark(Bitmap b)
+        {
+            try
+            {
+                long sum = 0;
+                int n = 0;
+                int sx = Math.Max(1, b.Width / 48), sy = Math.Max(1, b.Height / 48);
+                for (int y = 0; y < b.Height; y += sy)
+                    for (int x = 0; x < b.Width; x += sx)
+                    {
+                        Color c = b.GetPixel(x, y);
+                        int lum = (c.R * 299 + c.G * 587 + c.B * 114) / 1000;
+                        sum += c.A < 40 ? 255 : lum;
+                        n++;
+                    }
+                return n > 0 && sum / n < 110;
+            }
+            catch { return false; }
+        }
+
+        // 按倍数 k 缩放(可选反色)后识别一次;height 返回识别到的字的中位高度(缩放后的像素)
+        static List<string> RunOnce(object engine, Bitmap src, double k, bool invert, out double height)
+        {
+            height = 0;
+            Type tEngine = WinRT("Windows.Media.Ocr.OcrEngine");
+            Type tResult = WinRT("Windows.Media.Ocr.OcrResult");
+            Type tLine = WinRT("Windows.Media.Ocr.OcrLine");
+            Type tWord = WinRT("Windows.Media.Ocr.OcrWord");
+            Type tFile = WinRT("Windows.Storage.StorageFile");
+            Type tMode = WinRT("Windows.Storage.FileAccessMode");
+            Type tStream = WinRT("Windows.Storage.Streams.IRandomAccessStream");
+            Type tDecoder = WinRT("Windows.Graphics.Imaging.BitmapDecoder");
+            Type tSoft = WinRT("Windows.Graphics.Imaging.SoftwareBitmap");
+
             string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Glean-OCR");
             Directory.CreateDirectory(dir);
             string file = System.IO.Path.Combine(dir, "ocr-" + Guid.NewGuid().ToString("N") + ".png");
-            using (Bitmap src = Util.LoadBitmap(imagePath))
+            int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
+            using (Bitmap dst = new Bitmap(w, h, PixelFormat.Format24bppRgb))
             {
-                int big = Math.Max(src.Width, src.Height);
-                // 截图里的字和屏幕缩放成正比:100% 缩放时字很小,放大 2 倍识别更准;200% 缩放时字已经够大
-                double k = Upscale > 0 ? Upscale : Math.Max(1.0, Math.Min(2.0, 2.0 / Math.Max(0.5, (double)Gfx.Scale)));
-                double limit = maxDim * 0.98;
-                if (big * k > limit) k = limit / big;
-                int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
-                using (Bitmap dst = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+                using (Graphics g = Graphics.FromImage(dst))
                 {
-                    using (Graphics g = Graphics.FromImage(dst))
+                    g.Clear(invert ? Color.Black : Color.White);   // 透明的地方当背景色
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    if (invert)
                     {
-                        g.Clear(Color.White);
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                        if (Gray)
+                        ColorMatrix cm = new ColorMatrix(new float[][]
                         {
-                            ColorMatrix cm = new ColorMatrix(new float[][]
-                            {
-                                new float[] { 0.299f, 0.299f, 0.299f, 0, 0 },
-                                new float[] { 0.587f, 0.587f, 0.587f, 0, 0 },
-                                new float[] { 0.114f, 0.114f, 0.114f, 0, 0 },
-                                new float[] { 0, 0, 0, 1, 0 },
-                                new float[] { 0, 0, 0, 0, 1 }
-                            });
-                            using (ImageAttributes ia = new ImageAttributes())
-                            {
-                                ia.SetColorMatrix(cm);
-                                g.DrawImage(src, new Rectangle(0, 0, w, h), 0, 0, src.Width, src.Height, GraphicsUnit.Pixel, ia);
-                            }
+                            new float[] { -1, 0, 0, 0, 0 },
+                            new float[] { 0, -1, 0, 0, 0 },
+                            new float[] { 0, 0, -1, 0, 0 },
+                            new float[] { 0, 0, 0, 1, 0 },
+                            new float[] { 1, 1, 1, 0, 1 }
+                        });
+                        using (ImageAttributes ia = new ImageAttributes())
+                        {
+                            ia.SetColorMatrix(cm);
+                            g.DrawImage(src, new Rectangle(0, 0, w, h), 0, 0, src.Width, src.Height, GraphicsUnit.Pixel, ia);
                         }
-                        else g.DrawImage(src, 0, 0, w, h);
                     }
-                    dst.Save(file, ImageFormat.Png);
+                    else g.DrawImage(src, 0, 0, w, h);
                 }
+                if (invert)
+                {
+                    // 反色时透明区域(先铺的黑底)也被反成了白色以外的颜色:统一再铺一次白底
+                    using (Bitmap flat = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+                    {
+                        using (Graphics fg = Graphics.FromImage(flat)) { fg.Clear(Color.White); fg.DrawImageUnscaled(dst, 0, 0); }
+                        flat.Save(file, ImageFormat.Png);
+                    }
+                }
+                else dst.Save(file, ImageFormat.Png);
             }
 
-            // 3) 交给系统识别
             try
             {
                 object storageFile = Await(tFile.GetMethod("GetFileFromPathAsync", new Type[] { typeof(string) }).Invoke(null, new object[] { file }), tFile);
@@ -9151,26 +9264,37 @@ namespace Glean
                     {
                         object result = Await(tEngine.GetMethod("RecognizeAsync").Invoke(engine, new object[] { soft }), tResult);
                         List<string> lines = new List<string>();
+                        List<double> hs = new List<double>();
                         try
                         {
                             object ls = tResult.GetProperty("Lines").GetValue(result, null);
                             foreach (object ln in (System.Collections.IEnumerable)ls)
+                            {
                                 lines.Add((string)tLine.GetProperty("Text").GetValue(ln, null));
+                                if (tWord == null) continue;
+                                try
+                                {
+                                    object ws = tLine.GetProperty("Words").GetValue(ln, null);
+                                    foreach (object wd in (System.Collections.IEnumerable)ws)
+                                    {
+                                        object rect = tWord.GetProperty("BoundingRect").GetValue(wd, null);
+                                        hs.Add(Convert.ToDouble(rect.GetType().GetProperty("Height").GetValue(rect, null)));
+                                    }
+                                }
+                                catch { }
+                            }
                         }
                         catch
                         {
                             lines.Clear();
                             lines.Add((string)tResult.GetProperty("Text").GetValue(result, null) ?? "");
                         }
-                        StringBuilder sb = new StringBuilder();
-                        foreach (string l in lines)
+                        if (hs.Count > 0)
                         {
-                            string x = Tidy(l ?? "");
-                            if (x.Length == 0) continue;
-                            if (sb.Length > 0) sb.Append("\r\n");
-                            sb.Append(x);
+                            hs.Sort();
+                            height = hs[hs.Count / 2];
                         }
-                        return sb.ToString();
+                        return lines;
                     }
                     finally { Close(soft); }
                 }

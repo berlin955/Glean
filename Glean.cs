@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.9.0.0")]
-[assembly: AssemblyFileVersion("0.9.0.0")]
+[assembly: AssemblyVersion("0.10.0.0")]
+[assembly: AssemblyFileVersion("0.10.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.9";
+        public const string Version = "0.10";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -7010,6 +7010,7 @@ namespace Glean
         readonly FileView fileView = new FileView();
         // 底部(卡片模式在右上角)的小提示条:"已删除 · 撤销"
         string toastText;
+        bool toastIcon;
         Action toastUndo, toastCommit;
         Rectangle toastRect, toastBtn;
         readonly System.Windows.Forms.Timer toastTimer = new System.Windows.Forms.Timer();
@@ -7531,7 +7532,7 @@ namespace Glean
                     g.DrawLine(lp, Gfx.S(16), Height - Gfx.S(42), Width - Gfx.S(16), Height - Gfx.S(42));
                 int ly = Height - Gfx.S(21);
                 int lr = Width - Gfx.S(16);
-                if (toastText != null && !filesMode) { DrawToast(g, lr, ly); return; }
+                if (toastText != null) { DrawToast(g, lr, ly); return; }
                 lr = Gfx.KeyHint(g, "Enter", filesMode ? "打开" : "粘贴", lr, ly);
                 lr = Gfx.KeyHint(g, "空格", "预览", lr - Gfx.S(14), ly);
                 Gfx.KeyHint(g, filesMode ? "Backspace" : "Tab", filesMode ? "上一级" : "分类", lr - Gfx.S(14), ly);
@@ -7543,7 +7544,7 @@ namespace Glean
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int cy = Gfx.S(14) + Gfx.S(18);
             int right = gear.Left - Gfx.S(16);
-            if (toastText != null && !filesMode) { DrawToast(g, right, cy); return; }
+            if (toastText != null) { DrawToast(g, right, cy); return; }
             right = Gfx.KeyHint(g, "Enter", filesMode ? "打开" : "粘贴", right, cy);
             Gfx.KeyHint(g, "空格", "预览", right - Gfx.S(16), cy);
         }
@@ -7813,11 +7814,66 @@ namespace Glean
             }, null);
         }
 
+        // ---------------- 图片转文字
+        static readonly HashSet<string> OcrExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff"
+        };
+        bool ocrBusy;
+
+        // paste = true:识别完直接粘贴到原来的窗口(从卡片发起);false:只复制(从文件夹发起)
+        void OcrImage(string path, bool paste)
+        {
+            if (ocrBusy) return;
+            ocrBusy = true;
+            ShowToast("正在识别文字…", null, null);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string text = null, err = null;
+                bool noChinese = false;
+                try { text = Ocr.Recognize(path, out noChinese); }
+                catch (Exception ex) { err = Ocr.Reason(ex); }
+                try { BeginInvoke(new MethodInvoker(delegate { OcrDone(text, err, noChinese, paste); })); }
+                catch { ocrBusy = false; }
+            });
+        }
+
+        void OcrDone(string text, string err, bool noChinese, bool paste)
+        {
+            ocrBusy = false;
+            if (noChinese)
+                owner.Balloon("这台电脑没有安装中文识别组件,这次只能识别英文。在“设置 → 时间和语言 → 语言”中添加“中文(简体)”后即可识别中文。", true);
+            if (err != null)
+            {
+                ShowToast("识别失败", null, null);
+                owner.Balloon("文字识别失败:" + err, true);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                ShowToast("没有识别到文字", null, null);
+                return;
+            }
+            CloseToast(true);
+            Item ni = owner.Record(text);
+            if (ni == null) return;
+            if (paste && Visible && !filesMode)
+            {
+                HideNow();
+                owner.Apply(ni, true);   // 和"粘贴为…"一样:粘贴到原来的窗口,同时作为新卡片留在历史里
+                return;
+            }
+            owner.Apply(ni, false);
+            if (Visible) { Reload(0); ShowToast("文字已复制", null, null); }
+            else owner.Balloon("识别出的文字已复制到剪切板", false);
+        }
+
         // ---------------- 提示条
         void ShowToast(string text, Action undo, Action commit)
         {
             CloseToast(true);   // 上一个提示的操作就此生效
             toastText = text;
+            toastIcon = undo != null || commit != null;
             toastUndo = undo;
             toastCommit = commit;
             toastTimer.Stop();
@@ -7856,22 +7912,29 @@ namespace Glean
             int uw = TextRenderer.MeasureText(undo, Gfx.Bold, Size.Empty, nf).Width;
             int kw = TextRenderer.MeasureText(key, Gfx.Small, Size.Empty, nf).Width;
             int h = Gfx.S(30), padX = Gfx.S(14), gap = Gfx.S(12);
-            int w = padX + Gfx.S(16) + Gfx.S(8) + tw + gap + Gfx.S(1) + gap + uw + Gfx.S(6) + kw + padX;
+            bool hasUndo = toastUndo != null;
+            int iconW = toastIcon ? Gfx.S(16) + Gfx.S(8) : 0;
+            int w = hasUndo ? padX + iconW + tw + gap + Gfx.S(1) + gap + uw + Gfx.S(6) + kw + padX
+                            : padX + iconW + tw + padX;
             Rectangle r = new Rectangle(right - w, cy - h / 2, w, h);
             toastRect = r;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             Gfx.FillRound(g, t.Input, r, 99);
             Gfx.DrawRound(g, Color.FromArgb(t.Dark ? 40 : 28, t.Text), r, 99, Gfx.F(1f));
             int x = r.X + padX;
-            // 小勾
-            using (Pen p = new Pen(t.Accent, Gfx.F(1.8f)))
+            if (toastIcon)
             {
-                p.StartCap = p.EndCap = LineCap.Round;
-                p.LineJoin = LineJoin.Round;
-                g.DrawLines(p, new Point[] { new Point(x + Gfx.S(2), cy), new Point(x + Gfx.S(6), cy + Gfx.S(4)), new Point(x + Gfx.S(14), cy - Gfx.S(4)) });
+                // 小勾
+                using (Pen p = new Pen(t.Accent, Gfx.F(1.8f)))
+                {
+                    p.StartCap = p.EndCap = LineCap.Round;
+                    p.LineJoin = LineJoin.Round;
+                    g.DrawLines(p, new Point[] { new Point(x + Gfx.S(2), cy), new Point(x + Gfx.S(6), cy + Gfx.S(4)), new Point(x + Gfx.S(14), cy - Gfx.S(4)) });
+                }
+                x += iconW;
             }
-            x += Gfx.S(16) + Gfx.S(8);
             TextRenderer.DrawText(g, toastText, Gfx.UI, new Rectangle(x, r.Y, tw + 2, h), t.Text, nf | TextFormatFlags.VerticalCenter);
+            if (!hasUndo) { toastBtn = Rectangle.Empty; return; }
             x += tw + gap;
             using (Pen sp = new Pen(Color.FromArgb(t.Dark ? 50 : 40, t.Text))) g.DrawLine(sp, x, r.Y + Gfx.S(8), x, r.Bottom - Gfx.S(8));
             x += Gfx.S(1) + gap;
@@ -7995,6 +8058,11 @@ namespace Glean
             else
             {
                 m.Items.Add("在文件夹中显示", null, delegate { ShowInFolder(it); });
+            }
+            if ((it.IsImage || it.IsImageFile) && Ocr.Available)
+            {
+                string imgPath = it.IsImage ? it.FilePath : it.Paths[0];
+                m.Items.Add("识别图片里的文字并粘贴", null, delegate { OcrImage(imgPath, true); });
             }
 
             // 单张卡片的标题颜色
@@ -8337,6 +8405,8 @@ namespace Glean
                         try { Process.Start("rundll32.exe", "shell32.dll,OpenAs_RunDLL " + first); } catch { }
                     });
                 m.Items.Add("快速预览(空格)", null, delegate { ShowFileQuick(); });
+                if (!isDir && Ocr.Available && OcrExts.Contains(System.IO.Path.GetExtension(first)))
+                    m.Items.Add("识别图片里的文字", null, delegate { OcrImage(first, false); });
                 m.Items.Add(new ToolStripSeparator());
             }
             m.Items.Add(single ? "复制" : "复制 " + paths.Count + " 项", null, delegate { CopyFiles(paths); });
@@ -8898,6 +8968,187 @@ namespace Glean
         public Version Ver;
         public string Tag, Notes, Url, Sha256, PageUrl;
         public long Size;
+    }
+
+    // ================================================================ 图片转文字
+    // 用 Windows 10/11 自带的离线文字识别(Windows.Media.Ocr)。
+    // 不在编译时引用它,而是运行时再去找:编译方式不用变,老系统上找不到就自动隐藏这个功能。
+    static class Ocr
+    {
+        static int state;   // 0 还没检查  1 可用  -1 不可用
+        static MethodInfo asTaskOp;
+
+        static Type WinRT(string name)
+        {
+            foreach (string asm in new string[] { "Windows.Foundation", "Windows.Media", "Windows.Storage", "Windows.Graphics", "Windows.Globalization", "Windows" })
+            {
+                try
+                {
+                    Type t = Type.GetType(name + ", " + asm + ", ContentType=WindowsRuntime", false);
+                    if (t != null) return t;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        public static bool Available
+        {
+            get
+            {
+                if (state == 0)
+                {
+                    bool ok = false;
+                    try { ok = WinRT("Windows.Media.Ocr.OcrEngine") != null; } catch { ok = false; }
+                    state = ok ? 1 : -1;
+                }
+                return state == 1;
+            }
+        }
+
+        // 等待 WinRT 的异步操作完成,返回结果
+        static object Await(object op, Type resultType)
+        {
+            if (asTaskOp == null)
+            {
+                Assembly a = Assembly.Load("System.Runtime.WindowsRuntime, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+                Type ext = a.GetType("System.WindowsRuntimeSystemExtensions");
+                foreach (MethodInfo m in ext.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (m.Name != "AsTask" || !m.IsGenericMethodDefinition || m.GetGenericArguments().Length != 1) continue;
+                    ParameterInfo[] ps = m.GetParameters();
+                    if (ps.Length == 1 && ps[0].ParameterType.Name == "IAsyncOperation`1") { asTaskOp = m; break; }
+                }
+                if (asTaskOp == null) throw new Exception("找不到系统的异步组件");
+            }
+            System.Threading.Tasks.Task t = (System.Threading.Tasks.Task)asTaskOp.MakeGenericMethod(resultType).Invoke(null, new object[] { op });
+            if (!t.Wait(30000)) throw new Exception("识别超时");
+            return t.GetType().GetProperty("Result").GetValue(t, null);
+        }
+
+        static void Close(object o)
+        {
+            IDisposable d = o as IDisposable;
+            if (d != null) { try { d.Dispose(); } catch { } }
+        }
+
+        // 把异常里真正的原因取出来
+        public static string Reason(Exception ex)
+        {
+            while ((ex is TargetInvocationException || ex is AggregateException) && ex.InnerException != null) ex = ex.InnerException;
+            return ex.Message;
+        }
+
+        // 中文识别结果常在每个字之间加空格("你 好"),去掉中文之间的空格,英文单词之间的保留
+        static readonly Regex CjkGap = new Regex(@"(?<=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])[ \t]+(?=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])");
+
+        // 在后台线程调用。noChinese = true 表示系统没有中文识别组件,这次只按其他语言(一般是英文)识别
+        public static string Recognize(string imagePath, out bool noChinese)
+        {
+            noChinese = false;
+            Type tEngine = WinRT("Windows.Media.Ocr.OcrEngine");
+            Type tResult = WinRT("Windows.Media.Ocr.OcrResult");
+            Type tLine = WinRT("Windows.Media.Ocr.OcrLine");
+            Type tLang = WinRT("Windows.Globalization.Language");
+            Type tFile = WinRT("Windows.Storage.StorageFile");
+            Type tMode = WinRT("Windows.Storage.FileAccessMode");
+            Type tStream = WinRT("Windows.Storage.Streams.IRandomAccessStream");
+            Type tDecoder = WinRT("Windows.Graphics.Imaging.BitmapDecoder");
+            Type tSoft = WinRT("Windows.Graphics.Imaging.SoftwareBitmap");
+            if (tEngine == null || tResult == null || tLine == null || tLang == null || tFile == null ||
+                tMode == null || tStream == null || tDecoder == null || tSoft == null)
+                throw new Exception("这台电脑的系统不支持文字识别(需要 Windows 10 或更新版本)");
+
+            // 1) 识别引擎:优先用中文(中文引擎也能认英文),没有就用系统语言
+            object engine = null;
+            foreach (string tag in new string[] { "zh-Hans-CN", "zh-Hans", "zh-CN", "zh-Hant-TW", "zh-Hant" })
+            {
+                try
+                {
+                    object lang = Activator.CreateInstance(tLang, tag);
+                    bool sup = (bool)tEngine.GetMethod("IsLanguageSupported").Invoke(null, new object[] { lang });
+                    if (!sup) continue;
+                    engine = tEngine.GetMethod("TryCreateFromLanguage").Invoke(null, new object[] { lang });
+                    if (engine != null) break;
+                }
+                catch { }
+            }
+            if (engine == null)
+            {
+                engine = tEngine.GetMethod("TryCreateFromUserProfileLanguages").Invoke(null, null);
+                if (engine == null) throw new Exception("系统里没有可用的文字识别语言");
+                noChinese = true;
+            }
+
+            // 2) 准备图片:透明底铺白;小图放大一倍(小字更容易认),太大的按系统上限缩小
+            uint maxDim = 10000;
+            try { maxDim = Convert.ToUInt32(tEngine.GetProperty("MaxImageDimension").GetValue(null, null)); } catch { }
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Glean-OCR");
+            Directory.CreateDirectory(dir);
+            string file = System.IO.Path.Combine(dir, "ocr-" + Guid.NewGuid().ToString("N") + ".png");
+            using (Bitmap src = Util.LoadBitmap(imagePath))
+            {
+                int big = Math.Max(src.Width, src.Height);
+                double k = big < 1200 ? 2.0 : 1.0;
+                double limit = maxDim * 0.98;
+                if (big * k > limit) k = limit / big;
+                int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
+                using (Bitmap dst = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+                {
+                    using (Graphics g = Graphics.FromImage(dst))
+                    {
+                        g.Clear(Color.White);
+                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        g.DrawImage(src, 0, 0, w, h);
+                    }
+                    dst.Save(file, ImageFormat.Png);
+                }
+            }
+
+            // 3) 交给系统识别
+            try
+            {
+                object storageFile = Await(tFile.GetMethod("GetFileFromPathAsync", new Type[] { typeof(string) }).Invoke(null, new object[] { file }), tFile);
+                object stream = Await(tFile.GetMethod("OpenAsync", new Type[] { tMode }).Invoke(storageFile, new object[] { Enum.ToObject(tMode, 0) }), tStream);
+                try
+                {
+                    object decoder = Await(tDecoder.GetMethod("CreateAsync", new Type[] { tStream }).Invoke(null, new object[] { stream }), tDecoder);
+                    object soft = Await(tDecoder.GetMethod("GetSoftwareBitmapAsync", Type.EmptyTypes).Invoke(decoder, null), tSoft);
+                    try
+                    {
+                        object result = Await(tEngine.GetMethod("RecognizeAsync").Invoke(engine, new object[] { soft }), tResult);
+                        List<string> lines = new List<string>();
+                        try
+                        {
+                            object ls = tResult.GetProperty("Lines").GetValue(result, null);
+                            foreach (object ln in (System.Collections.IEnumerable)ls)
+                                lines.Add((string)tLine.GetProperty("Text").GetValue(ln, null));
+                        }
+                        catch
+                        {
+                            lines.Clear();
+                            lines.Add((string)tResult.GetProperty("Text").GetValue(result, null) ?? "");
+                        }
+                        StringBuilder sb = new StringBuilder();
+                        foreach (string l in lines)
+                        {
+                            string x = CjkGap.Replace(l ?? "", "").Trim();
+                            if (x.Length == 0) continue;
+                            if (sb.Length > 0) sb.Append("\r\n");
+                            sb.Append(x);
+                        }
+                        return sb.ToString();
+                    }
+                    finally { Close(soft); }
+                }
+                finally { Close(stream); }
+            }
+            finally
+            {
+                try { File.Delete(file); } catch { }
+            }
+        }
     }
 
     static class Updater
@@ -9903,6 +10154,11 @@ namespace Glean
                 Util.ClipboardOwnerApp(out appPath, out appName);
                 hist.SetSource(added, appPath, appName);
             }
+        }
+
+        public void Balloon(string text, bool warn)
+        {
+            tray.ShowBalloonTip(warn ? 6000 : 2500, Brand.Name, text, warn ? ToolTipIcon.Warning : ToolTipIcon.Info);
         }
 
         // 供弹出窗口调用:把一段新文本记入历史(用于"粘贴为…")

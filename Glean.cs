@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.13.0.0")]
-[assembly: AssemblyFileVersion("0.13.0.0")]
+[assembly: AssemblyVersion("0.14.0.0")]
+[assembly: AssemblyFileVersion("0.14.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.13";
+        public const string Version = "0.14";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -1015,6 +1015,13 @@ namespace Glean
         public static void Text(Graphics g, string s, Font f, Rectangle r, Color c, TextFormatFlags flags)
         {
             TextRenderer.DrawText(g, s, f, r, c, flags | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        }
+
+        // 往缓存图片里写字时用:告诉系统底色,ClearType 抗锯齿才会和底色混合。
+        // 不给底色的话,画进图片里的字会按黑底算边缘,浅色背景上看起来发黑、毛糙
+        public static void TextOn(Graphics g, string s, Font f, Rectangle r, Color c, Color back, TextFormatFlags flags)
+        {
+            TextRenderer.DrawText(g, s, f, r, c, back, flags | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
         }
 
         // 彩色底上的浅色字:用灰度抗锯齿直接和底色混合。
@@ -5083,7 +5090,7 @@ namespace Glean
                 Bitmap pv = it.Preview;
                 if (pv != null) DrawCover(g, pv, body);
                 else if (!it.ThumbPending)
-                    Gfx.Text(g, "预览不可用", Gfx.Small, body, t.Sub, TextFormatFlags.HorizontalCenter);
+                    Gfx.TextOn(g, "预览不可用", Gfx.Small, body, t.Sub, t.Input, TextFormatFlags.HorizontalCenter);
             }
             else if (kind == Item.KColor)
             {
@@ -5103,11 +5110,11 @@ namespace Glean
                     g.DrawImage(it.FileIcon, new Rectangle(body.X + (body.Width - isz) / 2, iy, isz, isz));
                 }
                 Rectangle nr = new Rectangle(inner.X, iy + isz + ShelfMetrics.Z(6), inner.Width, ShelfMetrics.Z(40));
-                TextRenderer.DrawText(g, it.FileTitle(), Gfx.Bold, nr, t.Text,
+                TextRenderer.DrawText(g, it.FileTitle(), Gfx.Bold, nr, t.Text, t.Card,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
                 TextRenderer.DrawText(g, CardLook.FolderOf(it), Gfx.Small,
-                    new Rectangle(inner.X, nr.Bottom + ShelfMetrics.Z(2), inner.Width, Math.Max(10, body.Bottom - nr.Bottom - ShelfMetrics.Z(4))), t.Sub,
+                    new Rectangle(inner.X, nr.Bottom + ShelfMetrics.Z(2), inner.Width, Math.Max(10, body.Bottom - nr.Bottom - ShelfMetrics.Z(4))), t.Sub, t.Card,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
             }
@@ -5116,11 +5123,11 @@ namespace Glean
                 string url = it.Text.Trim();
                 int hostH = ShelfMetrics.Z(52);
                 TextRenderer.DrawText(g, CardLook.Host(url), Gfx.Big,
-                    new Rectangle(inner.X, inner.Y, inner.Width, hostH), t.Text,
+                    new Rectangle(inner.X, inner.Y, inner.Width, hostH), t.Text, t.Card,
                     TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
                 TextRenderer.DrawText(g, url, Gfx.Small,
-                    new Rectangle(inner.X, inner.Y + hostH + Gfx.S(4), inner.Width, Math.Max(10, inner.Height - hostH - Gfx.S(4))), t.Accent,
+                    new Rectangle(inner.X, inner.Y + hostH + Gfx.S(4), inner.Width, Math.Max(10, inner.Height - hostH - Gfx.S(4))), t.Accent, t.Card,
                     TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
             }
@@ -5128,7 +5135,7 @@ namespace Glean
             {
                 string bt = CardLook.BodyText(it);
                 bool shortText = bt.Length <= 48 && bt.IndexOf('\n') < 0;
-                TextRenderer.DrawText(g, bt, shortText ? Gfx.Big : Gfx.UI, inner, t.Text,
+                TextRenderer.DrawText(g, bt, shortText ? Gfx.Big : Gfx.UI, inner, t.Text, t.Card,
                     TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
             }
@@ -5143,8 +5150,8 @@ namespace Glean
             }
             if (it.Pinned)
             {
-                Gfx.Text(g, "★", Gfx.Symbol, new Rectangle(fright - Gfx.S(18), fr.Y, Gfx.S(18), fr.Height),
-                    Color.FromArgb(255, 190, 0), TextFormatFlags.HorizontalCenter);
+                Gfx.TextOn(g, "★", Gfx.Symbol, new Rectangle(fright - Gfx.S(18), fr.Y, Gfx.S(18), fr.Height),
+                    Color.FromArgb(255, 190, 0), t.Card, TextFormatFlags.HorizontalCenter);
                 fright -= Gfx.S(22);
             }
             int fx = fr.X;
@@ -5156,7 +5163,7 @@ namespace Glean
                     g.FillEllipse(dbr, fx, fr.Y + (fr.Height - dsz) / 2, dsz, dsz);
                 fx += Gfx.S(14);
             }
-            Gfx.Text(g, CardLook.Footer(it), Gfx.Small, new Rectangle(fx, fr.Y, Math.Max(10, fright - fx), fr.Height), t.Sub,
+            Gfx.TextOn(g, CardLook.Footer(it), Gfx.Small, new Rectangle(fx, fr.Y, Math.Max(10, fright - fx), fr.Height), t.Sub, t.Card,
                 TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
         }
 

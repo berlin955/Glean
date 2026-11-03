@@ -6,32 +6,14 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: build
-        shell: cmd
-        run: |
-          set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          "%CSC%" /nologo /target:winexe /optimize /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:tex.exe Glean.cs TexTest.cs /main:TexTest || exit /b 1
-      - name: download tests
+      - name: kuaidi100 autonumber
         shell: pwsh
         run: |
-          Start-Process .\tex.exe
-          Start-Sleep 4
-          $u = Get-Content url.txt
-          Write-Output "URL $u"
-          $orig = (Get-FileHash 20261103_143205_123_abcdef0123456789.png).Hash
-          curl.exe -s -o dl/full.bin -w "T1 plain GET: http=%{http_code} bytes=%{size_download}`n" "$u/f0?dl=1"
-          Write-Output ("T1 same content: " + ((Get-FileHash dl/full.bin).Hash -eq $orig))
-          curl.exe -s -I "$u/f0?dl=1" | Select-String "HTTP/|Content-Length|Accept-Ranges|Content-Disposition" | ForEach-Object { "T2 HEAD " + $_.Line }
-          curl.exe -s -r 0- -o dl/r0.bin -w "T3 range 0-: http=%{http_code} bytes=%{size_download}`n" "$u/f0?dl=1"
-          curl.exe -s -r 1000-1999 -o dl/r1.bin -w "T4 range 1000-1999: http=%{http_code} bytes=%{size_download}`n" "$u/f0"
-          curl.exe -s -r -500 -o dl/r2.bin -w "T5 range last 500: http=%{http_code} bytes=%{size_download}`n" "$u/f0"
-          curl.exe -s --max-filesize 100 -o dl/part.bin "$u/f0" ; curl.exe -s -r 0-4999999 -o dl/part.bin "$u/f0"
-          curl.exe -s -C - -o dl/part.bin -w "T6 resume: http=%{http_code} bytes=%{size_download}`n" "$u/f0"
-          Write-Output ("T6 resumed file same content: " + ((Get-FileHash dl/part.bin).Hash -eq $orig))
-          curl.exe -s --limit-rate 4M -o dl/slow.bin -w "T7 slow phone (4MB/s): http=%{http_code} bytes=%{size_download}`n" "$u/f0"
-          Write-Output ("T7 same content: " + ((Get-FileHash dl/slow.bin).Hash -eq $orig))
-          curl.exe -s -I "$u/f1?dl=1" | Select-String "Content-Disposition|Content-Length" | ForEach-Object { "T8 chinese name " + $_.Line }
-          curl.exe -s -r 99999999- -o NUL -w "T9 bad range: http=%{http_code}`n" "$u/f0"
-          $page = curl.exe -s "$u"
-          Write-Output ("T10 page: dl link=" + ($page -match 'f0\?dl=1') + " nowrap css=" + ($page -match 'white-space:nowrap') + " friendly name=" + ($page -match '截图 2026-11-03 14\.32\.05\.png'))
+          foreach ($n in @("YT7652500323998", "SF1234567890123", "773123456789012", "78123456789012", "4312345678901", "9876543210987", "1234567890123")) {
+            $r = curl.exe -s -A "Mozilla/5.0" "https://www.kuaidi100.com/autonumber/autoComNum?resultv2=1&text=$n"
+            Write-Output "AUTO $n => $r"
+          }
+          $r2 = curl.exe -s -o NUL -w "%{http_code} %{redirect_url}" -A "Mozilla/5.0" "https://www.kuaidi100.com/chaxun?com=yuantong&nu=YT7652500323998"
+          Write-Output "PAGE chaxun => $r2"
+          $r3 = curl.exe -s -o NUL -w "%{http_code} %{redirect_url}" -A "Mozilla/5.0" "https://m.kuaidi100.com/result.jsp?nu=YT7652500323998"
+          Write-Output "PAGE m.result => $r3"

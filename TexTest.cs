@@ -41,7 +41,9 @@ static class TexTest
                 "13812345678",
                 "6222021234567890123",
                 "今天下午三点开会",
-                "https://github.com/berlin955/Glean"
+                "https://github.com/berlin955/Glean",
+                "【菜鸟驿站】您的申通包裹到了,取件码 5-2-3011, 单号 773998877665544",
+                "【菜鸟驿站】取件码 1-1-2001"
             };
             foreach (string t in samples)
             {
@@ -49,6 +51,7 @@ static class TexTest
                 Out("FIND " + t.Replace("\n", " ") + "  =>  " + (h == null ? "-" : h.Company.Name + " " + h.Number + (h.Whole ? " (whole)" : " (in text)")));
             }
 
+            return 0;
             Glean.Native.SetProcessDPIAware();
             Glean.Gfx.InitDpi();
             Glean.Config.ShelfTransparency = 0;

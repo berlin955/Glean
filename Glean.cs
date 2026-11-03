@@ -10082,7 +10082,7 @@ namespace Glean
         }
 
         static readonly Regex Candidate = new Regex(@"(?<![A-Za-z0-9])[A-Za-z]{0,3}\d[A-Za-z0-9]{8,21}(?![A-Za-z0-9])");
-        static readonly Regex Context = new Regex("快递|单号|运单|物流|包裹|取件|派送|派件|签收|驿站|丰巢|菜鸟|揽收|发货|已发出|配送");
+        static readonly Regex Context = new Regex("快递|(?<!订)单号|运单|物流|包裹|取件|派送|派件|签收|驿站|丰巢|揽收|已发货|已发出|配送");
 
         // 在一段文字里找单号:带字母前缀的直接认;纯数字的要文字里提到快递(或快递公司名)才认,避免把订单号、手机号当成单号
         public static Hit Find(string text, bool digitsNeedContext)
@@ -10092,6 +10092,7 @@ namespace Glean
             Company named = null;
             foreach (Company c in Companies)
             {
+                if (c.Code == "danniao") continue;   // "菜鸟驿站"只是代收点,不代表是哪家快递
                 string shortName = c.Name.Length > 2 ? c.Name.Substring(0, 2) : c.Name;
                 if (body.IndexOf(shortName, StringComparison.Ordinal) >= 0) { named = c; break; }
             }
@@ -10099,13 +10100,14 @@ namespace Glean
             foreach (System.Text.RegularExpressions.Match m in Candidate.Matches(body))
             {
                 string t = m.Value.ToUpperInvariant();
+                // 优先级:带字母前缀的(确定)> 文字里点名的公司 > 纯数字规则 > 只在提到快递时才认的规则
                 Company c = ByRules(t, false);
                 bool whole = Number(text) == t;   // 整段就是这个号码:不需要上下文
+                if (c == null && named != null && Regex.IsMatch(t, @"^[A-Z]{0,3}\d{10,20}$")) c = named;
                 if (c == null && (context || whole || !digitsNeedContext)) c = ByRules(t, true);
                 if (c == null && context)
                     foreach (KeyValuePair<Regex, string> r in ContextOnlyRules)
                         if (r.Key.IsMatch(t)) { c = Find(r.Value); break; }
-                if (c == null && named != null && Regex.IsMatch(t, @"^[A-Z]{0,3}\d{10,20}$")) c = named;   // 文字里点名了公司
                 if (c != null)
                 {
                     Hit h = new Hit();

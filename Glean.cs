@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.10.0.0")]
-[assembly: AssemblyFileVersion("0.10.0.0")]
+[assembly: AssemblyVersion("0.14.0.0")]
+[assembly: AssemblyFileVersion("0.14.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.10";
+        public const string Version = "0.14";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -734,40 +734,91 @@ namespace Glean
         }
 
         // 当前剪切板内容来自哪个程序:返回 exe 路径和显示名称
-        // 进程 → (程序路径, 显示名);读进程信息比较慢(尤其是读不到时会抛异常),同一个程序只查一次
-        static readonly Dictionary<uint, KeyValuePair<string, string>> ownerCache = new Dictionary<uint, KeyValuePair<string, string>>();
+        // 进程 → (程序路径, 显示名, 进程名);读进程信息比较慢,同一个程序只查一次
+        static readonly Dictionary<uint, string[]> ownerCache = new Dictionary<uint, string[]>();
 
-        public static void ClipboardOwnerApp(out string path, out string name)
+        // 会把剪切板内容"转手"再写一遍的程序(远程控制、虚拟机的剪切板同步)。
+        // 它们会变成剪切板的"主人",但内容其实来自你正在用的那个窗口
+        static readonly HashSet<string> RelayApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            path = null;
-            name = null;
-            IntPtr w = Native.GetClipboardOwner();
-            if (w == IntPtr.Zero) return;
+            "todesk", "todesk_service", "todesk_lite", "sunloginclient", "sunloginremote", "slrc", "awesun", "oray",
+            "teamviewer", "teamviewer_service", "tv_w32", "tv_x64", "anydesk", "rustdesk", "parsecd", "parsec",
+            "rdpclip", "remoting_host", "remoting_desktop", "splashtop", "srstreamer", "uuremote", "gameviewer",
+            "vmtoolsd", "vboxtray", "vboxclient", "prl_cc", "ditto"
+        };
+
+        public static bool IsRelay(string exeOrPath)
+        {
+            if (string.IsNullOrEmpty(exeOrPath)) return false;
+            string n;
+            try { n = System.IO.Path.GetFileNameWithoutExtension(exeOrPath); } catch { n = exeOrPath; }
+            return RelayApps.Contains(n);
+        }
+
+        static uint PidOf(IntPtr w)
+        {
+            if (w == IntPtr.Zero) return 0;
             uint pid;
             Native.GetWindowThreadProcessId(w, out pid);
-            if (pid == 0) return;
-            KeyValuePair<string, string> hit;
+            return pid;
+        }
+
+        static string[] Lookup(uint pid)
+        {
+            string[] hit;
             lock (ownerCache)
             {
-                if (ownerCache.TryGetValue(pid, out hit)) { path = hit.Key; name = hit.Value; return; }
+                if (ownerCache.TryGetValue(pid, out hit)) return hit;
             }
-            LookupOwner(pid, out path, out name);
+            string path, name, exe;
+            LookupOwner(pid, out path, out name, out exe);
+            hit = new string[] { path, name, exe };
             lock (ownerCache)
             {
                 if (ownerCache.Count > 200) ownerCache.Clear();
-                ownerCache[pid] = new KeyValuePair<string, string>(path, name);
+                ownerCache[pid] = hit;
+            }
+            return hit;
+        }
+
+        // 真正的来源程序:一般是剪切板的"主人";主人是转手程序或者查不到时,用你按 Ctrl+C 时所在的窗口
+        public static void ClipboardSource(out string path, out string name, out string exe)
+        {
+            path = name = exe = null;
+            uint pid = PidOf(Native.GetClipboardOwner());
+            if (pid != 0)
+            {
+                string[] o = Lookup(pid);
+                path = o[0]; name = o[1]; exe = o[2];
+            }
+            if (pid == 0 || IsRelay(exe) || IsRelay(path))
+            {
+                uint fp = PidOf(Native.GetForegroundWindow());
+                if (fp != 0 && fp != (uint)Process.GetCurrentProcess().Id)
+                {
+                    string[] f = Lookup(fp);
+                    if (f[0] != null || f[2] != null) { path = f[0]; name = f[1]; exe = f[2]; }
+                }
             }
         }
 
-        static void LookupOwner(uint pid, out string path, out string name)
+        public static void ClipboardOwnerApp(out string path, out string name)
+        {
+            string exe;
+            ClipboardSource(out path, out name, out exe);
+        }
+
+        static void LookupOwner(uint pid, out string path, out string name, out string exe)
         {
             path = null;
             name = null;
+            exe = null;
             try
             {
                 using (Process p = Process.GetProcessById((int)pid))
                 {
                     name = p.ProcessName;
+                    exe = p.ProcessName;
                     try { path = p.MainModule.FileName; } catch { path = null; }
                 }
                 if (path != null)
@@ -894,7 +945,7 @@ namespace Glean
             Size ls = TextRenderer.MeasureText(label, Small, Size.Empty, nf);
             Size ks = TextRenderer.MeasureText(key, Small, Size.Empty, nf);
             int lx = right - ls.Width;
-            TextRenderer.DrawText(g, label, Small, new Point(lx, cy - ls.Height / 2), t.Sub, nf);
+            TextRenderer.DrawText(g, label, Small, new Point(lx, cy - ls.Height / 2), Theme.Blend(t.Sub, t.Text, 0.45), nf);
             int kh = S(20);
             int kw = Math.Max(kh, ks.Width + S(14));
             Rectangle kr = new Rectangle(lx - S(7) - kw, cy - kh / 2, kw, kh);
@@ -964,6 +1015,63 @@ namespace Glean
         public static void Text(Graphics g, string s, Font f, Rectangle r, Color c, TextFormatFlags flags)
         {
             TextRenderer.DrawText(g, s, f, r, c, flags | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        }
+
+        // 往缓存图片里写字时用:告诉系统底色,ClearType 抗锯齿才会和底色混合。
+        // 不给底色的话,画进图片里的字会按黑底算边缘,浅色背景上看起来发黑、毛糙
+        public static void TextOn(Graphics g, string s, Font f, Rectangle r, Color c, Color back, TextFormatFlags flags)
+        {
+            TextRenderer.DrawText(g, s, f, r, c, back, flags | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        }
+
+        // 彩色底上的浅色字:用灰度抗锯齿直接和底色混合。
+        // ClearType 画在彩色色带上会在字的边缘留下一圈发黑的彩边,看起来像"黑边"。
+        static StringFormat softFormat;
+
+        static StringFormat SoftFormat(bool center)
+        {
+            if (softFormat == null)
+            {
+                softFormat = (StringFormat)StringFormat.GenericTypographic.Clone();
+                softFormat.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
+                softFormat.Trimming = StringTrimming.EllipsisCharacter;
+                softFormat.LineAlignment = StringAlignment.Center;
+                softFormat.HotkeyPrefix = System.Drawing.Text.HotkeyPrefix.None;
+            }
+            StringFormat f = (StringFormat)softFormat.Clone();
+            f.Alignment = center ? StringAlignment.Center : StringAlignment.Near;
+            return f;
+        }
+
+        public static void SoftText(Graphics g, string s, Font f, Rectangle r, Color c, bool center)
+        {
+            System.Drawing.Text.TextRenderingHint old = g.TextRenderingHint;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using (StringFormat sf = SoftFormat(center))
+            using (SolidBrush b = new SolidBrush(c))
+                g.DrawString(s ?? "", f, b, new RectangleF(r.X, r.Y, r.Width, r.Height), sf);
+            g.TextRenderingHint = old;
+        }
+
+        public static int SoftWidth(Graphics g, string s, Font f)
+        {
+            using (StringFormat sf = SoftFormat(false))
+                return (int)Math.Ceiling(g.MeasureString(s ?? "", f, PointF.Empty, sf).Width);
+        }
+    }
+
+    // 测量各步骤耗时(只在测试时打开,平时不做任何事)
+    static class Perf
+    {
+        public static bool On;
+        public static readonly List<string> Log = new List<string>();
+        static readonly Stopwatch sw = new Stopwatch();
+        public static void Start() { if (On) sw.Restart(); }
+        public static void Mark(string name)
+        {
+            if (!On) return;
+            Log.Add(name + " " + sw.Elapsed.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture));
+            sw.Restart();
         }
     }
 
@@ -1480,6 +1588,7 @@ namespace Glean
             {
                 it.AppPath = m[0].Length > 0 ? m[0] : null;
                 it.AppName = m[1].Length > 0 ? m[1] : null;
+                if (Util.IsRelay(it.AppPath)) { it.AppPath = null; it.AppName = null; }   // 以前被记成远程控制软件的,不显示错的图标
                 int cc;
                 it.CustomColor = (m.Length > 2 && int.TryParse(m[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out cc)) ? cc : 0;
                 it.Board = (m.Length > 3 && m[3].Length > 0) ? m[3] : null;
@@ -2268,7 +2377,7 @@ namespace Glean
             {
                 int d = Gfx.S(4), gap = Gfx.S(4);
                 int x0 = (Width - d * 3 - gap * 2) / 2, y0 = (Height - d) / 2;
-                using (SolidBrush b = new SolidBrush(hover ? t.Text : t.Sub))
+                using (SolidBrush b = new SolidBrush(hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45)))
                     for (int k = 0; k < 3; k++) g.FillEllipse(b, x0 + k * (d + gap), y0, d, d);
                 return;
             }
@@ -2305,7 +2414,7 @@ namespace Glean
             float cx = Width / 2f, cy = Height / 2f;
             if (!IsPin)
             {
-                using (Pen p = new Pen(hover ? t.Text : t.Sub, Gfx.F(1.8f)))
+                using (Pen p = new Pen(hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45), Gfx.F(1.8f)))
                 {
                     p.StartCap = p.EndCap = LineCap.Round;
                     g.DrawLine(p, cx - Gfx.F(5), cy + Gfx.F(1), cx + Gfx.F(5), cy + Gfx.F(1));
@@ -2313,7 +2422,7 @@ namespace Glean
                 return;
             }
             // 图钉:钉住时竖直、主题色实心;没钉住时斜着、空心
-            Color c = Active ? t.Accent : (hover ? t.Text : t.Sub);
+            Color c = Active ? t.Accent : (hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45));
             GraphicsState st = g.Save();
             g.TranslateTransform(cx, cy);
             if (!Active) g.RotateTransform(45f);
@@ -3044,6 +3153,45 @@ namespace Glean
             catch { return null; }
         }
 
+        // 保证文字看得清:量一下背后画面的亮度(取偏亮的那部分),
+        // 深色主题下背景太亮、浅色主题下背景太暗时,自动把着色加深一点;背景本来就合适时完全按用户设的透明度
+        public static int Legible(Bitmap blur, int transparency)
+        {
+            if (blur == null || transparency <= 0) return transparency;
+            Theme t = Theme.Cur;
+            try
+            {
+                List<int> lum = new List<int>();
+                int sx = Math.Max(1, blur.Width / 48), sy = Math.Max(1, blur.Height / 16);
+                for (int y = sy / 2; y < blur.Height; y += sy)
+                    for (int x = sx / 2; x < blur.Width; x += sx)
+                    {
+                        Color c = blur.GetPixel(x, y);
+                        lum.Add((c.R * 299 + c.G * 587 + c.B * 114) / 1000);
+                    }
+                if (lum.Count == 0) return transparency;
+                lum.Sort();
+                double shelf = (t.Shelf.R * 299 + t.Shelf.G * 587 + t.Shelf.B * 114) / 1000.0;
+                double need;   // 至少要盖多少主题色(0~1)
+                if (t.Dark)
+                {
+                    double L = lum[(int)(lum.Count * 0.80)];   // 偏亮的那部分
+                    const double target = 62;
+                    need = L <= target ? 0 : (L - target) / Math.Max(1, L - shelf);
+                }
+                else
+                {
+                    double L = lum[(int)(lum.Count * 0.20)];   // 偏暗的那部分
+                    const double target = 196;
+                    need = L >= target ? 0 : (target - L) / Math.Max(1, shelf - L);
+                }
+                need = Math.Max(0, Math.Min(0.92, need));
+                int maxTrans = (int)Math.Floor((1 - need) * 100);
+                return Math.Min(transparency, maxTrans);
+            }
+            catch { return transparency; }
+        }
+
         // 在 r 上盖主题色 + 高光 + 暖光。panelTop:面板顶边在 r 里的位置;k:缩放(设置里的小预览用)
         public static void Tint(Graphics g, Rectangle r, int transparency, int panelTop, float k)
         {
@@ -3110,7 +3258,7 @@ namespace Glean
                         og.InterpolationMode = InterpolationMode.Bilinear;
                         og.DrawImage(blur, new Rectangle(0, 0, dw, Height));
                     }
-                    Frost.Tint(og, new Rectangle(0, 0, Width, Height), Transparency, 0, k);
+                    Frost.Tint(og, new Rectangle(0, 0, Width, Height), Frost.Legible(blur, Transparency), 0, k);
 
                     // 迷你面板内容:搜索框、分类圆点、几张卡片
                     og.SmoothingMode = SmoothingMode.AntiAlias;
@@ -4967,22 +5115,17 @@ namespace Glean
             if (hh < Gfx.S(40))
             {
                 // 卡片缩得很小时:标题和时间放在同一行
-                TextFormatFlags one = TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis |
-                                      TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter;
                 string ttl = CardLook.Title(it);
-                Size tsz = TextRenderer.MeasureText(ttl, Gfx.HeaderFont, Size.Empty, TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-                int titleW = Math.Min(tsz.Width, tw0);
-                TextRenderer.DrawText(g, ttl, Gfx.HeaderFont, new Rectangle(tx0, hr.Y, titleW, hh), ink, one);
+                int titleW = Math.Min(Gfx.SoftWidth(g, ttl, Gfx.HeaderFont) + Gfx.S(2), tw0);
+                Gfx.SoftText(g, ttl, Gfx.HeaderFont, new Rectangle(tx0, hr.Y, titleW, hh), ink, false);
                 if (titleW + Gfx.S(30) < tw0)
-                    TextRenderer.DrawText(g, subt, Gfx.Small, new Rectangle(tx0 + titleW + Gfx.S(4), hr.Y, tw0 - titleW - Gfx.S(4), hh), subInk, one);
+                    Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0 + titleW + Gfx.S(8), hr.Y, tw0 - titleW - Gfx.S(8), hh), subInk, false);
             }
             else
             {
                 int blockY = hr.Y + (hh - Gfx.S(40)) / 2;
-                Gfx.Text(g, CardLook.Title(it), Gfx.HeaderFont, new Rectangle(tx0, blockY, tw0, Gfx.S(22)), ink,
-                    TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-                Gfx.Text(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk,
-                    TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+                Gfx.SoftText(g, CardLook.Title(it), Gfx.HeaderFont, new Rectangle(tx0, blockY, tw0, Gfx.S(22)), ink, false);
+                Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk, false);
             }
             if (appIcon != null)
             {
@@ -5001,14 +5144,14 @@ namespace Glean
                 Bitmap pv = it.Preview;
                 if (pv != null) DrawCover(g, pv, body);
                 else if (!it.ThumbPending)
-                    Gfx.Text(g, "预览不可用", Gfx.Small, body, t.Sub, TextFormatFlags.HorizontalCenter);
+                    Gfx.TextOn(g, "预览不可用", Gfx.Small, body, t.Sub, t.Input, TextFormatFlags.HorizontalCenter);
             }
             else if (kind == Item.KColor)
             {
                 Color sc = it.SwatchColor();
                 using (SolidBrush cb = new SolidBrush(sc)) g.FillRectangle(cb, body);
                 Color swInk = CardLook.InkOn(sc);
-                Gfx.Text(g, it.Text.Trim().ToUpperInvariant(), Gfx.Big, body, swInk, TextFormatFlags.HorizontalCenter);
+                Gfx.SoftText(g, it.Text.Trim().ToUpperInvariant(), Gfx.Big, body, swInk, true);
             }
             else if (it.IsFiles)
             {
@@ -5021,11 +5164,11 @@ namespace Glean
                     g.DrawImage(it.FileIcon, new Rectangle(body.X + (body.Width - isz) / 2, iy, isz, isz));
                 }
                 Rectangle nr = new Rectangle(inner.X, iy + isz + ShelfMetrics.Z(6), inner.Width, ShelfMetrics.Z(40));
-                TextRenderer.DrawText(g, it.FileTitle(), Gfx.Bold, nr, t.Text,
+                TextRenderer.DrawText(g, it.FileTitle(), Gfx.Bold, nr, t.Text, t.Card,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
                 TextRenderer.DrawText(g, CardLook.FolderOf(it), Gfx.Small,
-                    new Rectangle(inner.X, nr.Bottom + ShelfMetrics.Z(2), inner.Width, Math.Max(10, body.Bottom - nr.Bottom - ShelfMetrics.Z(4))), t.Sub,
+                    new Rectangle(inner.X, nr.Bottom + ShelfMetrics.Z(2), inner.Width, Math.Max(10, body.Bottom - nr.Bottom - ShelfMetrics.Z(4))), t.Sub, t.Card,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
             }
@@ -5034,11 +5177,11 @@ namespace Glean
                 string url = it.Text.Trim();
                 int hostH = ShelfMetrics.Z(52);
                 TextRenderer.DrawText(g, CardLook.Host(url), Gfx.Big,
-                    new Rectangle(inner.X, inner.Y, inner.Width, hostH), t.Text,
+                    new Rectangle(inner.X, inner.Y, inner.Width, hostH), t.Text, t.Card,
                     TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
                 TextRenderer.DrawText(g, url, Gfx.Small,
-                    new Rectangle(inner.X, inner.Y + hostH + Gfx.S(4), inner.Width, Math.Max(10, inner.Height - hostH - Gfx.S(4))), t.Accent,
+                    new Rectangle(inner.X, inner.Y + hostH + Gfx.S(4), inner.Width, Math.Max(10, inner.Height - hostH - Gfx.S(4))), t.Accent, t.Card,
                     TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
             }
@@ -5046,7 +5189,7 @@ namespace Glean
             {
                 string bt = CardLook.BodyText(it);
                 bool shortText = bt.Length <= 48 && bt.IndexOf('\n') < 0;
-                TextRenderer.DrawText(g, bt, shortText ? Gfx.Big : Gfx.UI, inner, t.Text,
+                TextRenderer.DrawText(g, bt, shortText ? Gfx.Big : Gfx.UI, inner, t.Text, t.Card,
                     TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                     TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
             }
@@ -5061,8 +5204,8 @@ namespace Glean
             }
             if (it.Pinned)
             {
-                Gfx.Text(g, "★", Gfx.Symbol, new Rectangle(fright - Gfx.S(18), fr.Y, Gfx.S(18), fr.Height),
-                    Color.FromArgb(255, 190, 0), TextFormatFlags.HorizontalCenter);
+                Gfx.TextOn(g, "★", Gfx.Symbol, new Rectangle(fright - Gfx.S(18), fr.Y, Gfx.S(18), fr.Height),
+                    Color.FromArgb(255, 190, 0), t.Card, TextFormatFlags.HorizontalCenter);
                 fright -= Gfx.S(22);
             }
             int fx = fr.X;
@@ -5074,7 +5217,7 @@ namespace Glean
                     g.FillEllipse(dbr, fx, fr.Y + (fr.Height - dsz) / 2, dsz, dsz);
                 fx += Gfx.S(14);
             }
-            Gfx.Text(g, CardLook.Footer(it), Gfx.Small, new Rectangle(fx, fr.Y, Math.Max(10, fright - fx), fr.Height), t.Sub,
+            Gfx.TextOn(g, CardLook.Footer(it), Gfx.Small, new Rectangle(fx, fr.Y, Math.Max(10, fright - fx), fr.Height), t.Sub, t.Card,
                 TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
         }
 
@@ -5339,15 +5482,14 @@ namespace Glean
             text.Font = Gfx.Input;
             text.TabStop = false;
             pic.SizeMode = PictureBoxSizeMode.Zoom;
-            AllowTransparency = true;
+            // 不用半透明淡入:半透明窗口里 Windows 的 ClearType 文字会算错,边缘发黑、毛糙
             pop.Interval = 15;
             pop.Tick += delegate
             {
-                double p = (DateTime.Now - popStart).TotalMilliseconds / 260.0;
+                double p = (DateTime.Now - popStart).TotalMilliseconds / 180.0;
                 if (p >= 1) { p = 1; pop.Stop(); }
                 double e = 1 - Math.Pow(1 - p, 3);
-                Opacity = e;
-                Top = popY + (int)((1 - e) * Gfx.S(18));
+                Top = popY + (int)((1 - e) * Gfx.S(12));   // 只保留轻轻上浮
             };
             Controls.Add(text);
             Controls.Add(pic);
@@ -5432,8 +5574,7 @@ namespace Glean
             if (!Visible)
             {
                 // 淡入 + 轻轻上浮
-                Opacity = 0;
-                Top = y + Gfx.S(18);
+                Top = y + Gfx.S(12);
                 Show();
                 popStart = DateTime.Now;
                 pop.Start();
@@ -5587,8 +5728,7 @@ namespace Glean
             popY = y;
             if (!Visible)
             {
-                Opacity = 0;
-                Top = y + Gfx.S(18);
+                Top = y + Gfx.S(12);
                 Show();
                 popStart = DateTime.Now;
                 pop.Start();
@@ -5615,10 +5755,9 @@ namespace Glean
                 Theme.Blend(band, Color.Black, 0.10), LinearGradientMode.Vertical))
                 g.FillRectangle(lb, hr);
             Color ink = CardLook.InkOn(band);
-            Gfx.Text(g, title, Gfx.HeaderFont, new Rectangle(Gfx.S(22), Gfx.S(6), Width - Gfx.S(44), Gfx.S(26)), ink,
-                TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-            Gfx.Text(g, meta, Gfx.Small, new Rectangle(Gfx.S(22), Gfx.S(32), Width - Gfx.S(44), Gfx.S(18)),
-                Theme.Blend(band, ink, 0.80), TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            Gfx.SoftText(g, title, Gfx.HeaderFont, new Rectangle(Gfx.S(22), Gfx.S(6), Width - Gfx.S(44), Gfx.S(26)), ink, false);
+            Gfx.SoftText(g, meta, Gfx.Small, new Rectangle(Gfx.S(22), Gfx.S(32), Width - Gfx.S(44), Gfx.S(18)),
+                Theme.Blend(band, ink, 0.80), false);
             Gfx.Text(g, hint, Gfx.Small,
                 new Rectangle(0, Height - Gfx.S(36), Width, Gfx.S(30)), t.Sub, TextFormatFlags.HorizontalCenter);
             using (Pen p = new Pen(t.Border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
@@ -7491,7 +7630,7 @@ namespace Glean
                 g.DrawImageUnscaled(blurBase, 0, 0);
                 g.CompositingMode = CompositingMode.SourceOver;
                 int panelTop = listMode ? 0 : Math.Max(0, b.Height - ShelfMetrics.ShelfH);
-                Frost.Tint(g, new Rectangle(0, 0, b.Width, b.Height), Config.ShelfTransparency, panelTop, 1f);
+                Frost.Tint(g, new Rectangle(0, 0, b.Width, b.Height), Frost.Legible(blurBase, Config.ShelfTransparency), panelTop, 1f);
             }
             backdrop = b;
         }
@@ -7552,8 +7691,10 @@ namespace Glean
         // ---------------- 显示 / 隐藏(从屏幕底部滑入滑出)
         public void ShowAt()
         {
+            Perf.Start();
             Theme.Refresh();
             ApplyTheme();
+            Perf.Mark("theme");
             // 先按剪切板准备好,下面再按上次停留的模式切过去
             bool reopenFiles = Config.LastFilesMode;
             filesMode = false;
@@ -7567,6 +7708,7 @@ namespace Glean
             sb.Box.Text = "";
             BuildTabs(0);
             suppress = false;
+            Perf.Mark("tabs");
 
             // 按设置选择视图:卡片(屏幕底部) / 列表(鼠标旁或屏幕中央)
             listMode = Config.Layout == 0;
@@ -7575,8 +7717,10 @@ namespace Glean
             listView.Visible = listMode;
             cardView.Visible = !listMode;
             Reload(2);
+            Perf.Mark("reload");
             if (reopenFiles) SetMode(true);   // 上次停在文件夹,就直接回到文件夹
             ApplyWindowStyle();
+            Perf.Mark("mode+style");
 
             if (listMode)
             {
@@ -7591,8 +7735,10 @@ namespace Glean
                 ly = Math.Max(wa2.Top, Math.Min(ly, wa2.Bottom - lh));
                 hiding = false;
                 BuildBackdrop(new Rectangle(lx, ly, lw, lh));
+                Perf.Mark("glass");
                 SetBounds(lx, ly + Gfx.S(10), lw, lh);
                 Show();
+                Perf.Mark("show");
                 Activate();
                 Native.SetForegroundWindow(Handle);
                 if (filesMode) fileView.Focus(); else strip.Focus();
@@ -7611,8 +7757,10 @@ namespace Glean
             int maxH = Gfx.S(100) + Gfx.S((int)Math.Round(236 * 1.6));
             int capTop = Math.Max(scr.Bounds.Top, wa.Bottom - m - maxH);
             BuildBackdrop(new Rectangle(wa.Left + m, capTop, wa.Width - 2 * m, wa.Bottom - m - capTop));
+            Perf.Mark("glass");
             SetBounds(wa.Left + m, scr.Bounds.Bottom, wa.Width - 2 * m, h);
             Show();
+            Perf.Mark("show");
             Activate();
             Native.SetForegroundWindow(Handle);
             if (filesMode) fileView.Focus(); else strip.Focus();
@@ -8087,7 +8235,8 @@ namespace Glean
             // 不再记录这个程序复制的内容(加进设置里的忽略名单)
             string exe = null;
             try { if (!string.IsNullOrEmpty(it.AppPath)) exe = System.IO.Path.GetFileNameWithoutExtension(it.AppPath); } catch { exe = null; }
-            if (!string.IsNullOrEmpty(exe) && !string.Equals(exe, System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(exe) && !Util.IsRelay(exe) &&
+                !string.Equals(exe, System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase))
             {
                 string shownName = string.IsNullOrEmpty(it.AppName) ? exe : it.AppName;
                 if (shownName.Length > 16) shownName = shownName.Substring(0, 15) + "…";
@@ -9066,19 +9215,32 @@ namespace Glean
             });
             s = CjkAsciiPunct.Replace(s, "");
             // 行首的项目符号常被认成全角点
-            s = Regex.Replace(s, @"^[\uFF0E\u00B7\u30FB\u2022][ \t]*(?=\S)", "• ");
+            s = Regex.Replace(s, @"^[\uFF0E\u00B7\u30FB\u2022\u3002][ \t]*(?=\S)", "• ");
             // 中文旁边的英文引号多出的空格:的 " 文件夹 " 变成 → 的"文件夹"变成
             s = Regex.Replace(s, @"(?<=[\u2E80-\u9FFF])[ \t]*""[ \t]*", "\"");
             s = Regex.Replace(s, @"[ \t]*""[ \t]*(?=[\u2E80-\u9FFF])", "\"");
             // 被拆成"偏旁 + 部件"的字合回去(这些偏旁单独出现在正常文字里的情况极少)
             foreach (KeyValuePair<string, string> kv in SplitFix)
                 if (s.IndexOf(kv.Key, StringComparison.Ordinal) >= 0) s = s.Replace(kv.Key, kv.Value);
+            // 形近的生僻字:"囗"(方框)几乎都是"口"
+            s = s.Replace('\u56D7', '\u53E3');
+            // 中文之间的全角点,其实是间隔号:拾光．设置 → 拾光 · 设置
+            s = Regex.Replace(s, @"(?<=[\u4E00-\u9FFF])[ \t]*[\uFF0E\u30FB][ \t]*(?=[\u4E00-\u9FFF])", " · ");
+            // 数字之间:被认成汉字"一"的连字符、全角冒号、被认成逗号的小数点
+            s = Regex.Replace(s, @"(?<=\d)[ \t]*[\u4E00\u2014\u2013\uFF0D][ \t]*(?=\d)", "-");
+            s = Regex.Replace(s, @"(?<=\d)[ \t]*\uFF1A[ \t]*(?=\d)", ":");
+            s = Regex.Replace(s, @"(?<=\d)\uFF0C(?=\d(?!\d\d(?!\d)))", ".");   // 1，000 这种千位分隔不动
+            // 日期、时间里被拆开的数字:2026-1 1-03 → 2026-11-03
+            s = Regex.Replace(s, @"(?<=[-:/.]\d)[ \t](?=\d[-:/.])", "");
+            s = Regex.Replace(s, @"(?<=\d{4}-\d)[ \t](?=\d\b)", "");
+            // 图标被认成的"0":行首的 0 / O 后面紧跟中文
+            s = Regex.Replace(s, @"^[0Oo\u3007][ \t]+(?=[\u4E00-\u9FFF]|[A-Z][a-z])", "");
             return s.Trim();
         }
 
         // 只收"单独出现几乎不可能"的偏旁(亻讠氵扌…和右边的刂攵阝),普通字的组合(如"日月")不动,避免误改
         static readonly KeyValuePair<string, string>[] SplitFix = BuildSplitFix(
-            "亻主住 亻尔你 亻门们 亻也他 亻故做 亻乍作 亻更便 亻吏使 亻立位 亻本体 亻可何 亻旦但 亻氐低 亻氏低 亻言信 亻牛件 亻介价 亻分份 亻壬任 亻木休 亻衣依 亻呆保 亻建健 亻亭停 亻共供 亻直值 亻扁偏 亻昔借 亻专传 亻尤优 亻韦伟 亻列例 亻匕化 亻十什 亻寸付 亻弋代 亻又仅 亻火伙 亻古估 亻圭佳 亻则侧 亻谷俗 彳亍行 彳寺待 彳艮很 彳主往 彳正征 彳走徒 冫欠次 冫令冷 冫隹准 冫夬决 冫咸减 冫兄况 冫水冰 冫中冲 冫争净 冫京凉 讠兑说 讠青请 讠吾语 讠十计 讠己记 讠人认 讠只识 讠舌话 讠周调 讠殳设 讠式试 讠义议 讠寸讨 讠方访 讠吴误 讠卖读 讠果课 讠午许 讠仑论 讠者诸 讠平评 讠羊详 讠炎谈 讠秀诱 讠亥该 讠正证 讠上让 讠川训 讠丁订 讠斥诉 讠司词 讠圣译 讠射谢 讠隹谁 讠胃谓 讠普谱 讠成诚 氵肖消 氵去法 氵青清 氵每海 氵十汁 氵也池 氵由油 氵告浩 氵寅演 氵吉洁 氵良浪 氵则测 氵舌活 氵原源 氵票漂 氵骨滑 氵殳没 氵工江 氵可河 氵先洗 氵皮波 氵主注 氵目泪 氵羊洋 氵又汉 氵少沙 氵齐济 氵胡湖 氵斩渐 氵昆混 氵气汽 氵台治 氵勾沟 氵包泡 扌丁打 扌巴把 扌安按 扌是提 扌妾接 扌由抽 扌白拍 扌乇托 扌巨拒 扌寺持 扌叟搜 扌罢摆 扌番播 扌兆挑 扌立拉 扌合拾 扌支技 扌斤折 扌并拼 扌召招 扌奂换 扌甬捅 扌殳投 扌戈找 扌旨指 扌包抱 扌察擦 扌非排 扌用拥 扌圭挂 扌广扩 扌旦担 扌户护 扌受授 扌卓掉 扌隹推 扌苗描 扌发拨 钅艮银 钅昔错 钅失铁 钅肖销 钅建键 钅连链 钅冈钢 钅中钟 钅戋钱 钅竟镜 钅丑钮 钅十针 纟及级 纟田细 纟冬终 纟会绘 纟吉结 纟色绝 纟合给 纟充统 纟扁编 纟屯纯 纟氏纸 纟千纤 纟工红 纟彖缘 纟东练 纟戋线 纟且组 纟圣经 纟责绩 纟宗综 纟录绿 纟勺约 纟己纪 纟卖续 纟隹维 纟宿缩 纟召绍 饣反饭 饣欠饮 饣并饼 饣包饱 饣官馆 饣我饿 犭苗猫 犭句狗 犭良狼 犭者猪 犭虫独 犭王狂 忄青情 忄亡忙 忄夬快 忄生性 忄曼慢 忄董懂 忄白怕 忄昔惜 忄艮恨 忄感憾 忄不怀 忄肖悄 礻申神 礻兄祝 礻斤祈 礻畐福 礻土社 礻见视 礻且祖 衤寸衬 衤刀初 衤皮被 衤卜补 衤由袖 衤库裤 阝方防 阝东陈 阝余除 阝完院 阝艮限 阝付附 阝人队 阝介阶 阝示际 阝且阻 阝击陆 阝日阳 阝月阴 另刂别 至刂到 歹刂列 禾刂利 冈刂刚 半刂判 居刂剧 亥刂刻 贝刂则 舌刂刮 干刂刊 乘刂剩 畐刂副 害刂割 者阝都 由阝邮 交阝郊 令阝邻 良阝郎 方攵放 己攵改 正攵政 古攵故 交攵效 娄攵数 孝攵教 苟攵敬 求攵救");
+            "亻王住 忄佥检 木佥检 扌佥捡 亻佥俭 忄金检 亻主住 亻尔你 亻门们 亻也他 亻故做 亻乍作 亻更便 亻吏使 亻立位 亻本体 亻可何 亻旦但 亻氐低 亻氏低 亻言信 亻牛件 亻介价 亻分份 亻壬任 亻木休 亻衣依 亻呆保 亻建健 亻亭停 亻共供 亻直值 亻扁偏 亻昔借 亻专传 亻尤优 亻韦伟 亻列例 亻匕化 亻十什 亻寸付 亻弋代 亻又仅 亻火伙 亻古估 亻圭佳 亻则侧 亻谷俗 彳亍行 彳寺待 彳艮很 彳主往 彳正征 彳走徒 冫欠次 冫令冷 冫隹准 冫夬决 冫咸减 冫兄况 冫水冰 冫中冲 冫争净 冫京凉 讠兑说 讠青请 讠吾语 讠十计 讠己记 讠人认 讠只识 讠舌话 讠周调 讠殳设 讠式试 讠义议 讠寸讨 讠方访 讠吴误 讠卖读 讠果课 讠午许 讠仑论 讠者诸 讠平评 讠羊详 讠炎谈 讠秀诱 讠亥该 讠正证 讠上让 讠川训 讠丁订 讠斥诉 讠司词 讠圣译 讠射谢 讠隹谁 讠胃谓 讠普谱 讠成诚 氵肖消 氵去法 氵青清 氵每海 氵十汁 氵也池 氵由油 氵告浩 氵寅演 氵吉洁 氵良浪 氵则测 氵舌活 氵原源 氵票漂 氵骨滑 氵殳没 氵工江 氵可河 氵先洗 氵皮波 氵主注 氵目泪 氵羊洋 氵又汉 氵少沙 氵齐济 氵胡湖 氵斩渐 氵昆混 氵气汽 氵台治 氵勾沟 氵包泡 扌丁打 扌巴把 扌安按 扌是提 扌妾接 扌由抽 扌白拍 扌乇托 扌巨拒 扌寺持 扌叟搜 扌罢摆 扌番播 扌兆挑 扌立拉 扌合拾 扌支技 扌斤折 扌并拼 扌召招 扌奂换 扌甬捅 扌殳投 扌戈找 扌旨指 扌包抱 扌察擦 扌非排 扌用拥 扌圭挂 扌广扩 扌旦担 扌户护 扌受授 扌卓掉 扌隹推 扌苗描 扌发拨 钅艮银 钅昔错 钅失铁 钅肖销 钅建键 钅连链 钅冈钢 钅中钟 钅戋钱 钅竟镜 钅丑钮 钅十针 纟及级 纟田细 纟冬终 纟会绘 纟吉结 纟色绝 纟合给 纟充统 纟扁编 纟屯纯 纟氏纸 纟千纤 纟工红 纟彖缘 纟东练 纟戋线 纟且组 纟圣经 纟责绩 纟宗综 纟录绿 纟勺约 纟己纪 纟卖续 纟隹维 纟宿缩 纟召绍 饣反饭 饣欠饮 饣并饼 饣包饱 饣官馆 饣我饿 犭苗猫 犭句狗 犭良狼 犭者猪 犭虫独 犭王狂 忄青情 忄亡忙 忄夬快 忄生性 忄曼慢 忄董懂 忄白怕 忄昔惜 忄艮恨 忄感憾 忄不怀 忄肖悄 礻申神 礻兄祝 礻斤祈 礻畐福 礻土社 礻见视 礻且祖 衤寸衬 衤刀初 衤皮被 衤卜补 衤由袖 衤库裤 阝方防 阝东陈 阝余除 阝完院 阝艮限 阝付附 阝人队 阝介阶 阝示际 阝且阻 阝击陆 阝日阳 阝月阴 另刂别 至刂到 歹刂列 禾刂利 冈刂刚 半刂判 居刂剧 亥刂刻 贝刂则 舌刂刮 干刂刊 乘刂剩 畐刂副 害刂割 者阝都 由阝邮 交阝郊 令阝邻 良阝郎 方攵放 己攵改 正攵政 古攵故 交攵效 娄攵数 孝攵教 苟攵敬 求攵救");
 
         static KeyValuePair<string, string>[] BuildSplitFix(string table)
         {
@@ -9156,7 +9318,7 @@ namespace Glean
                 foreach (string l in lines)
                 {
                     string x = Tidy(l ?? "");
-                    if (x.Length == 0) continue;
+                    if (x.Length == 0 || IconNoise.IsMatch(x)) continue;   // 单独一个"0""O"之类,多半是图标
                     if (sb.Length > 0) sb.Append("\r\n");
                     sb.Append(x);
                 }
@@ -9164,8 +9326,10 @@ namespace Glean
             }
         }
 
-        public static bool Adaptive = true;       // 按实际字高重新缩放
-        public static bool InvertDark = true;     // 深色背景先反色成白底黑字
+        static readonly Regex IconNoise = new Regex(@"^[0Oo\u3007\u53E3\u56DE@®©]$");
+
+        public static bool Adaptive = false;      // 按实际字高重新缩放(测试中)
+        public static bool InvertDark = false;    // 深色背景先反色成白底黑字(测试中)
         public static double TargetHeight = 24;   // 识别效果最好的字高(像素)
 
         static double Fit(Bitmap src, double k, uint maxDim)
@@ -10228,12 +10392,12 @@ namespace Glean
             {
                 string list = Config.IgnoreApps;
                 if (string.IsNullOrWhiteSpace(list)) return false;
-                IntPtr w = Native.GetClipboardOwner();
-                if (w == IntPtr.Zero) return false;
-                uint pid;
-                Native.GetWindowThreadProcessId(w, out pid);
-                if (pid == 0) return false;
-                string name = Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant();
+                // 用真正的来源程序判断(远程控制软件转手写入剪切板时,看的是你实际复制的那个程序)
+                string path, disp, exe;
+                Util.ClipboardSource(out path, out disp, out exe);
+                if (exe == null && path != null) exe = System.IO.Path.GetFileNameWithoutExtension(path);
+                if (exe == null) return false;
+                string name = exe.ToLowerInvariant();
                 foreach (string a in list.Split(new char[] { ',', ';', '，', '；' }))
                 {
                     string x = a.Trim().ToLowerInvariant();

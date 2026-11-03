@@ -8976,6 +8976,7 @@ namespace Glean
     static class Ocr
     {
         static int state;   // 0 还没检查  1 可用  -1 不可用
+        public static double Upscale = 2.0;   // 小图放大倍数
         static MethodInfo asTaskOp;
 
         static Type WinRT(string name)
@@ -9089,7 +9090,7 @@ namespace Glean
             using (Bitmap src = Util.LoadBitmap(imagePath))
             {
                 int big = Math.Max(src.Width, src.Height);
-                double k = big < 1200 ? 2.0 : 1.0;
+                double k = big < 1200 ? Upscale : 1.0;
                 double limit = maxDim * 0.98;
                 if (big * k > limit) k = limit / big;
                 int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));

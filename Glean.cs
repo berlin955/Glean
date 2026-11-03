@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.12.0.0")]
-[assembly: AssemblyFileVersion("0.12.0.0")]
+[assembly: AssemblyVersion("0.13.0.0")]
+[assembly: AssemblyFileVersion("0.13.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.12";
+        public const string Version = "0.13";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -5421,15 +5421,14 @@ namespace Glean
             text.Font = Gfx.Input;
             text.TabStop = false;
             pic.SizeMode = PictureBoxSizeMode.Zoom;
-            AllowTransparency = true;
+            // 不用半透明淡入:半透明窗口里 Windows 的 ClearType 文字会算错,边缘发黑、毛糙
             pop.Interval = 15;
             pop.Tick += delegate
             {
-                double p = (DateTime.Now - popStart).TotalMilliseconds / 260.0;
+                double p = (DateTime.Now - popStart).TotalMilliseconds / 180.0;
                 if (p >= 1) { p = 1; pop.Stop(); }
                 double e = 1 - Math.Pow(1 - p, 3);
-                Opacity = e;
-                Top = popY + (int)((1 - e) * Gfx.S(18));
+                Top = popY + (int)((1 - e) * Gfx.S(12));   // 只保留轻轻上浮
             };
             Controls.Add(text);
             Controls.Add(pic);
@@ -5514,8 +5513,7 @@ namespace Glean
             if (!Visible)
             {
                 // 淡入 + 轻轻上浮
-                Opacity = 0;
-                Top = y + Gfx.S(18);
+                Top = y + Gfx.S(12);
                 Show();
                 popStart = DateTime.Now;
                 pop.Start();
@@ -5669,8 +5667,7 @@ namespace Glean
             popY = y;
             if (!Visible)
             {
-                Opacity = 0;
-                Top = y + Gfx.S(18);
+                Top = y + Gfx.S(12);
                 Show();
                 popStart = DateTime.Now;
                 pop.Start();
@@ -9148,7 +9145,7 @@ namespace Glean
             });
             s = CjkAsciiPunct.Replace(s, "");
             // 行首的项目符号常被认成全角点
-            s = Regex.Replace(s, @"^[\uFF0E\u00B7\u30FB\u2022][ \t]*(?=\S)", "• ");
+            s = Regex.Replace(s, @"^[\uFF0E\u00B7\u30FB\u2022\u3002][ \t]*(?=\S)", "• ");
             // 中文旁边的英文引号多出的空格:的 " 文件夹 " 变成 → 的"文件夹"变成
             s = Regex.Replace(s, @"(?<=[\u2E80-\u9FFF])[ \t]*""[ \t]*", "\"");
             s = Regex.Replace(s, @"[ \t]*""[ \t]*(?=[\u2E80-\u9FFF])", "\"");
@@ -9173,7 +9170,7 @@ namespace Glean
 
         // 只收"单独出现几乎不可能"的偏旁(亻讠氵扌…和右边的刂攵阝),普通字的组合(如"日月")不动,避免误改
         static readonly KeyValuePair<string, string>[] SplitFix = BuildSplitFix(
-            "忄佥检 木佥检 扌佥捡 亻佥俭 忄金检 亻主住 亻尔你 亻门们 亻也他 亻故做 亻乍作 亻更便 亻吏使 亻立位 亻本体 亻可何 亻旦但 亻氐低 亻氏低 亻言信 亻牛件 亻介价 亻分份 亻壬任 亻木休 亻衣依 亻呆保 亻建健 亻亭停 亻共供 亻直值 亻扁偏 亻昔借 亻专传 亻尤优 亻韦伟 亻列例 亻匕化 亻十什 亻寸付 亻弋代 亻又仅 亻火伙 亻古估 亻圭佳 亻则侧 亻谷俗 彳亍行 彳寺待 彳艮很 彳主往 彳正征 彳走徒 冫欠次 冫令冷 冫隹准 冫夬决 冫咸减 冫兄况 冫水冰 冫中冲 冫争净 冫京凉 讠兑说 讠青请 讠吾语 讠十计 讠己记 讠人认 讠只识 讠舌话 讠周调 讠殳设 讠式试 讠义议 讠寸讨 讠方访 讠吴误 讠卖读 讠果课 讠午许 讠仑论 讠者诸 讠平评 讠羊详 讠炎谈 讠秀诱 讠亥该 讠正证 讠上让 讠川训 讠丁订 讠斥诉 讠司词 讠圣译 讠射谢 讠隹谁 讠胃谓 讠普谱 讠成诚 氵肖消 氵去法 氵青清 氵每海 氵十汁 氵也池 氵由油 氵告浩 氵寅演 氵吉洁 氵良浪 氵则测 氵舌活 氵原源 氵票漂 氵骨滑 氵殳没 氵工江 氵可河 氵先洗 氵皮波 氵主注 氵目泪 氵羊洋 氵又汉 氵少沙 氵齐济 氵胡湖 氵斩渐 氵昆混 氵气汽 氵台治 氵勾沟 氵包泡 扌丁打 扌巴把 扌安按 扌是提 扌妾接 扌由抽 扌白拍 扌乇托 扌巨拒 扌寺持 扌叟搜 扌罢摆 扌番播 扌兆挑 扌立拉 扌合拾 扌支技 扌斤折 扌并拼 扌召招 扌奂换 扌甬捅 扌殳投 扌戈找 扌旨指 扌包抱 扌察擦 扌非排 扌用拥 扌圭挂 扌广扩 扌旦担 扌户护 扌受授 扌卓掉 扌隹推 扌苗描 扌发拨 钅艮银 钅昔错 钅失铁 钅肖销 钅建键 钅连链 钅冈钢 钅中钟 钅戋钱 钅竟镜 钅丑钮 钅十针 纟及级 纟田细 纟冬终 纟会绘 纟吉结 纟色绝 纟合给 纟充统 纟扁编 纟屯纯 纟氏纸 纟千纤 纟工红 纟彖缘 纟东练 纟戋线 纟且组 纟圣经 纟责绩 纟宗综 纟录绿 纟勺约 纟己纪 纟卖续 纟隹维 纟宿缩 纟召绍 饣反饭 饣欠饮 饣并饼 饣包饱 饣官馆 饣我饿 犭苗猫 犭句狗 犭良狼 犭者猪 犭虫独 犭王狂 忄青情 忄亡忙 忄夬快 忄生性 忄曼慢 忄董懂 忄白怕 忄昔惜 忄艮恨 忄感憾 忄不怀 忄肖悄 礻申神 礻兄祝 礻斤祈 礻畐福 礻土社 礻见视 礻且祖 衤寸衬 衤刀初 衤皮被 衤卜补 衤由袖 衤库裤 阝方防 阝东陈 阝余除 阝完院 阝艮限 阝付附 阝人队 阝介阶 阝示际 阝且阻 阝击陆 阝日阳 阝月阴 另刂别 至刂到 歹刂列 禾刂利 冈刂刚 半刂判 居刂剧 亥刂刻 贝刂则 舌刂刮 干刂刊 乘刂剩 畐刂副 害刂割 者阝都 由阝邮 交阝郊 令阝邻 良阝郎 方攵放 己攵改 正攵政 古攵故 交攵效 娄攵数 孝攵教 苟攵敬 求攵救");
+            "亻王住 忄佥检 木佥检 扌佥捡 亻佥俭 忄金检 亻主住 亻尔你 亻门们 亻也他 亻故做 亻乍作 亻更便 亻吏使 亻立位 亻本体 亻可何 亻旦但 亻氐低 亻氏低 亻言信 亻牛件 亻介价 亻分份 亻壬任 亻木休 亻衣依 亻呆保 亻建健 亻亭停 亻共供 亻直值 亻扁偏 亻昔借 亻专传 亻尤优 亻韦伟 亻列例 亻匕化 亻十什 亻寸付 亻弋代 亻又仅 亻火伙 亻古估 亻圭佳 亻则侧 亻谷俗 彳亍行 彳寺待 彳艮很 彳主往 彳正征 彳走徒 冫欠次 冫令冷 冫隹准 冫夬决 冫咸减 冫兄况 冫水冰 冫中冲 冫争净 冫京凉 讠兑说 讠青请 讠吾语 讠十计 讠己记 讠人认 讠只识 讠舌话 讠周调 讠殳设 讠式试 讠义议 讠寸讨 讠方访 讠吴误 讠卖读 讠果课 讠午许 讠仑论 讠者诸 讠平评 讠羊详 讠炎谈 讠秀诱 讠亥该 讠正证 讠上让 讠川训 讠丁订 讠斥诉 讠司词 讠圣译 讠射谢 讠隹谁 讠胃谓 讠普谱 讠成诚 氵肖消 氵去法 氵青清 氵每海 氵十汁 氵也池 氵由油 氵告浩 氵寅演 氵吉洁 氵良浪 氵则测 氵舌活 氵原源 氵票漂 氵骨滑 氵殳没 氵工江 氵可河 氵先洗 氵皮波 氵主注 氵目泪 氵羊洋 氵又汉 氵少沙 氵齐济 氵胡湖 氵斩渐 氵昆混 氵气汽 氵台治 氵勾沟 氵包泡 扌丁打 扌巴把 扌安按 扌是提 扌妾接 扌由抽 扌白拍 扌乇托 扌巨拒 扌寺持 扌叟搜 扌罢摆 扌番播 扌兆挑 扌立拉 扌合拾 扌支技 扌斤折 扌并拼 扌召招 扌奂换 扌甬捅 扌殳投 扌戈找 扌旨指 扌包抱 扌察擦 扌非排 扌用拥 扌圭挂 扌广扩 扌旦担 扌户护 扌受授 扌卓掉 扌隹推 扌苗描 扌发拨 钅艮银 钅昔错 钅失铁 钅肖销 钅建键 钅连链 钅冈钢 钅中钟 钅戋钱 钅竟镜 钅丑钮 钅十针 纟及级 纟田细 纟冬终 纟会绘 纟吉结 纟色绝 纟合给 纟充统 纟扁编 纟屯纯 纟氏纸 纟千纤 纟工红 纟彖缘 纟东练 纟戋线 纟且组 纟圣经 纟责绩 纟宗综 纟录绿 纟勺约 纟己纪 纟卖续 纟隹维 纟宿缩 纟召绍 饣反饭 饣欠饮 饣并饼 饣包饱 饣官馆 饣我饿 犭苗猫 犭句狗 犭良狼 犭者猪 犭虫独 犭王狂 忄青情 忄亡忙 忄夬快 忄生性 忄曼慢 忄董懂 忄白怕 忄昔惜 忄艮恨 忄感憾 忄不怀 忄肖悄 礻申神 礻兄祝 礻斤祈 礻畐福 礻土社 礻见视 礻且祖 衤寸衬 衤刀初 衤皮被 衤卜补 衤由袖 衤库裤 阝方防 阝东陈 阝余除 阝完院 阝艮限 阝付附 阝人队 阝介阶 阝示际 阝且阻 阝击陆 阝日阳 阝月阴 另刂别 至刂到 歹刂列 禾刂利 冈刂刚 半刂判 居刂剧 亥刂刻 贝刂则 舌刂刮 干刂刊 乘刂剩 畐刂副 害刂割 者阝都 由阝邮 交阝郊 令阝邻 良阝郎 方攵放 己攵改 正攵政 古攵故 交攵效 娄攵数 孝攵教 苟攵敬 求攵救");
 
         static KeyValuePair<string, string>[] BuildSplitFix(string table)
         {

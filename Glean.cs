@@ -9246,8 +9246,8 @@ namespace Glean
             }
         }
 
-        public static bool Adaptive = true;       // 按实际字高重新缩放
-        public static bool InvertDark = true;     // 深色背景先反色成白底黑字
+        public static bool Adaptive = false;      // 按实际字高重新缩放(测试中)
+        public static bool InvertDark = false;    // 深色背景先反色成白底黑字(测试中)
         public static double TargetHeight = 24;   // 识别效果最好的字高(像素)
 
         static double Fit(Bitmap src, double k, uint maxDim)

@@ -8,8 +8,8 @@ namespace OcrTestNs
         static int Main()
         {
             string text = "复制的文字:Windows 10 自带识别,价格 128.5 元。\n拾光 识别测试 你好世界,剪切板历史记录\nHello Glean OCR test 12345, version 0.10";
-            float[] sizes = { 9f, 10.5f, 14f, 28f };
-            double[] ups = { 1.0, 1.5, 2.0, 3.0 };
+            float[] sizes = { 9f, 10.5f, 12f, 14f, 28f };
+            double[] ups = { 1.0, 1.5, 2.0 };
             foreach (float fs in sizes)
             {
                 string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ocr-" + fs + ".png");
@@ -26,14 +26,16 @@ namespace OcrTestNs
                         b.Save(path, ImageFormat.Png);
                     }
                 }
+                foreach (bool gray in new bool[] { false, true })
                 foreach (double u in ups)
                 {
                     Glean.Ocr.Upscale = u;
+                    Glean.Ocr.Gray = gray;
                     try
                     {
                         bool noZh;
                         string r = Glean.Ocr.Recognize(path, out noZh);
-                        Console.WriteLine("font " + fs + " up " + u + " => " + r.Replace("\r\n", " | "));
+                        Console.WriteLine("font " + fs + (gray ? " gray" : " color") + " up " + u + " => " + r.Replace("\r\n", " | "));
                     }
                     catch (Exception ex) { Console.WriteLine("font " + fs + " up " + u + " ERROR " + Glean.Ocr.Reason(ex)); }
                 }

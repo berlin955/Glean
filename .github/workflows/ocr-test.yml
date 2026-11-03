@@ -16,5 +16,5 @@ jobs:
           type out.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: glass
-          path: '*.png'
+          name: qr
+          path: qr/

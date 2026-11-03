@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.7.0.0")]
-[assembly: AssemblyFileVersion("0.7.0.0")]
+[assembly: AssemblyVersion("0.8.0.0")]
+[assembly: AssemblyFileVersion("0.8.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.7";
+        public const string Version = "0.8";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -1146,14 +1146,17 @@ namespace Glean
             get { return IsImage ? ".png" : (IsFiles ? ".files" : ".txt"); }
         }
 
-        // 文件类记录:每行一个路径
+        // 文件类记录:每行一个路径(内容不会变,拆一次就记住,画卡片时不用反复拆字符串)
+        string[] paths;
         public string[] Paths
         {
             get
             {
                 if (Text == null) return new string[0];
-                return Text.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                           .Select(x => x.Trim('\r')).ToArray();
+                if (paths == null)
+                    paths = Text.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => x.Trim('\r')).ToArray();
+                return paths;
             }
         }
 
@@ -1251,7 +1254,9 @@ namespace Glean
         public void InvalidatePreview()
         {
             if (!(IsImage || IsImageFile)) return;
+            Bitmap old = Preview;
             Preview = null;
+            if (old != null) old.Dispose();   // 卡片里画的是缓存的副本,旧图可以马上释放
             thumbTried = false;
             thumbDone = false;
         }
@@ -1487,13 +1492,25 @@ namespace Glean
             return v == null ? "" : v.Replace("\t", " ").Replace("\r", " ").Replace("\n", " ");
         }
 
+        int metaAppends;
+
         void WriteMeta(Item it)
         {
             meta[it.Hash] = new string[] { Clean(it.AppPath), Clean(it.AppName),
                 it.CustomColor != 0 ? it.CustomColor.ToString(CultureInfo.InvariantCulture) : "",
                 Clean(it.Board), Clean(it.CustomTitle) };
+            // index.tsv 是一直往后追加的;追加多了就整理一次,文件不会越变越大
+            if (++metaAppends >= 300) { metaAppends = 0; SaveMeta(); return; }
             try { File.AppendAllText(MetaFile, MetaLine(it) + "\r\n", new UTF8Encoding(false)); }
             catch { }
+        }
+
+        // 用户删掉的记录:连同它的标题、颜色、分类一起忘掉
+        // (否则之后再复制同样的内容,会"复活"以前起的标题和分类)
+        void Forget(Item it)
+        {
+            meta.Remove(it.Hash);
+            DeleteFile(it);
         }
 
         public void SetBoard(Item it, string boardId)
@@ -1588,6 +1605,8 @@ namespace Glean
         public void SetSource(Item it, string path, string name)
         {
             if (it == null || (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(name))) return;
+            if (it.AppPath == (string.IsNullOrEmpty(path) ? null : path) &&
+                it.AppName == (string.IsNullOrEmpty(name) ? null : name)) return;   // 没变就不写文件
             it.AppPath = string.IsNullOrEmpty(path) ? null : path;
             it.AppName = string.IsNullOrEmpty(name) ? null : name;
             WriteMeta(it);
@@ -1682,7 +1701,7 @@ namespace Glean
                 if (count > Config.MaxItems)
                 {
                     Items.Remove(it);
-                    DeleteFile(it);
+                    Forget(it);
                 }
             }
         }
@@ -1691,15 +1710,17 @@ namespace Glean
         {
             if (days <= 0) return;
             DateTime cutoff = DateTime.Now.AddDays(-days);
+            bool changed = false;
             foreach (Item it in Items.ToList())
             {
                 if (!it.Pinned && it.Board == null && it.Time < cutoff)
                 {
                     Items.Remove(it);
-                    DeleteFile(it);
+                    Forget(it);
+                    changed = true;
                 }
             }
-            SaveOrder();
+            if (changed) SaveOrder();   // 每次打开面板都会检查一遍,没删东西就不写文件
         }
 
         public Item AddText(string text)
@@ -1784,7 +1805,7 @@ namespace Glean
         public void Remove(Item it)
         {
             Items.Remove(it);
-            DeleteFile(it);
+            Forget(it);
             SaveOrder();
         }
 
@@ -1794,7 +1815,7 @@ namespace Glean
             {
                 if (keepPinned && (it.Pinned || it.Board != null)) continue;
                 Items.Remove(it);
-                DeleteFile(it);
+                Forget(it);
             }
             SaveOrder();
         }
@@ -2884,385 +2905,6 @@ namespace Glean
             Gfx.Text(g, it.TimeAgo() + "  ·  " + it.Info + (sizeTxt != null && !it.Info.Contains(sizeTxt) ? "  ·  " + sizeTxt : ""), Gfx.Small,
                 new Rectangle(tx, card.Y + Gfx.S(29), right - tx, Gfx.S(18)), t.Sub,
                 TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-        }
-    }
-
-    // ================================================================ 弹出窗口
-    class PopupForm : Form
-    {
-        static int W { get { return Gfx.S(480); } }
-        static int H { get { return Gfx.S(600); } }
-
-        readonly MainForm owner;
-        readonly History hist;
-        readonly SearchBox sb = new SearchBox();
-        readonly IconButton gear = new IconButton();
-        readonly Chips chips = new Chips();
-        readonly ItemList list = new ItemList();
-        List<Item> shown = new List<Item>();
-        bool menuOpen, suppress;
-
-        public PopupForm(MainForm owner, History hist)
-        {
-            this.owner = owner;
-            this.hist = hist;
-
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
-            StartPosition = FormStartPosition.Manual;
-            DoubleBuffered = true;
-            ClientSize = new Size(W, H);
-
-            sb.Cue = "搜索剪切板…";
-            sb.SetBounds(Gfx.S(16), Gfx.S(16), W - Gfx.S(16 + 16 + 44), Gfx.S(44));
-            sb.Box.TextChanged += delegate { Reload(); };
-
-            gear.MoreDots = true;   // 设置
-            gear.SetBounds(W - Gfx.S(16 + 38), Gfx.S(19), Gfx.S(38), Gfx.S(38));
-            gear.Click += delegate { Hide(); owner.ShowSettingsFromPopup(); };
-
-            chips.TabStyle = true;
-            chips.Height = Gfx.S(32);
-            chips.SetLabels(new string[] { "全部", "置顶", "文字", "图片", "文件", "链接" });
-            chips.SetBounds(Gfx.S(20), Gfx.S(72), W - Gfx.S(40), Gfx.S(32));
-            chips.Changed += delegate { Reload(); };
-
-            list.SetBounds(Gfx.S(4), Gfx.S(112), W - Gfx.S(8), H - Gfx.S(112 + 42));
-            list.ItemActivated += delegate(int i) { Choose(i, true); };
-            list.ItemContext += ShowItemMenu;
-
-            Controls.Add(sb);
-            Controls.Add(gear);
-            Controls.Add(chips);
-            Controls.Add(list);
-
-            // 鼠标滚轮在搜索框上时也能滚动列表
-            sb.Box.MouseWheel += delegate(object s, MouseEventArgs e) { list.ScrollBy(-e.Delta / 120 * Gfx.S(60)); };
-        }
-
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                CreateParams cp = base.CreateParams;
-                cp.ExStyle |= 0x80;        // WS_EX_TOOLWINDOW:不出现在 Alt+Tab
-                cp.ClassStyle |= 0x20000;  // CS_DROPSHADOW:阴影
-                return cp;
-            }
-        }
-
-        protected override void OnHandleCreated(EventArgs e)
-        {
-            base.OnHandleCreated(e);
-            Native.RoundCorners(Handle);
-        }
-
-        void ApplyTheme()
-        {
-            BackColor = Theme.Cur.Bg;
-            sb.ApplyTheme();
-            chips.Invalidate();
-            gear.Invalidate();
-            list.Invalidate();
-            Invalidate();
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Graphics g = e.Graphics;
-            Theme t = Theme.Cur;
-            g.Clear(t.Bg);
-            using (Pen p = new Pen(t.Border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
-            using (Pen p = new Pen(t.Border)) g.DrawLine(p, Gfx.S(16), Height - Gfx.S(40), Width - Gfx.S(16), Height - Gfx.S(40));
-            int pinned = hist.PinnedCount;
-            string left = Brand.Name + "  ·  共 " + hist.Items.Count + " 条" + (pinned > 0 ? "  ·  置顶 " + pinned : "");
-            Gfx.Text(g, left, Gfx.Small, new Rectangle(Gfx.S(16), Height - Gfx.S(34), Gfx.S(200), Gfx.S(28)), t.Sub, TextFormatFlags.Left);
-            Gfx.Text(g, "Enter 粘贴  ·  Tab 分类  ·  右键更多",
-                Gfx.Small, new Rectangle(Gfx.S(200), Height - Gfx.S(34), Width - Gfx.S(200 + 16), Gfx.S(28)), t.Sub, TextFormatFlags.Right);
-        }
-
-        protected override void OnDeactivate(EventArgs e)
-        {
-            base.OnDeactivate(e);
-            if (!menuOpen && Visible) Hide();
-        }
-
-        public void ShowAt(Point cursor)
-        {
-            Theme.Refresh();
-            ApplyTheme();
-            suppress = true;
-            sb.Box.Text = "";
-            chips.Selected = 0;
-            suppress = false;
-            Reload();
-
-            Rectangle wa = Screen.FromPoint(cursor).WorkingArea;
-            int x, y;
-            if (Config.PopupAtCursor) { x = cursor.X; y = cursor.Y; }
-            else { x = wa.Left + (wa.Width - Width) / 2; y = wa.Top + (wa.Height - Height) / 3; }
-            x = Math.Max(wa.Left, Math.Min(x, wa.Right - Width));
-            y = Math.Max(wa.Top, Math.Min(y, wa.Bottom - Height));
-            Location = new Point(x, y);
-            Show();
-            Activate();
-            Native.SetForegroundWindow(Handle);
-            sb.Box.Focus();
-        }
-
-        bool Match(Item it, string q)
-        {
-            switch (chips.Selected)
-            {
-                case 1: if (!it.Pinned) return false; break;
-                case 2: if (it.IsImage || it.IsFiles) return false; break;
-                case 3: if (!(it.IsImage || it.IsImageFile)) return false; break;
-                case 4: if (!it.IsFiles) return false; break;
-                case 5: if (it.IsImage || it.IsFiles || it.Kind != Item.KUrl) return false; break;
-            }
-            if (q.Length > 0)
-            {
-                if (it.IsImage) return false;
-                return it.Text.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0;
-            }
-            return true;
-        }
-
-        void Reload()
-        {
-            if (suppress) return;
-            string q = sb.Box.Text.Trim();
-            List<Item> pinned = new List<Item>();
-            List<Item> rest = new List<Item>();
-            foreach (Item it in hist.Items)
-            {
-                if (!Match(it, q)) continue;
-                if (it.Pinned) pinned.Add(it); else rest.Add(it);
-            }
-            pinned.AddRange(rest);
-            shown = pinned.Take(150).ToList();
-            list.EmptyText = (q.Length > 0 || chips.Selected != 0) ? "没有匹配的记录" : "复制点什么,这里就会出现";
-            string[] heads = new string[shown.Count];
-            if (q.Length == 0 && chips.Selected == 0 && shown.Count > 0)
-            {
-                int pc = 0;
-                foreach (Item pi in shown) if (pi.Pinned) pc++;
-                if (pc > 0)
-                {
-                    heads[0] = "置顶";
-                    if (pc < shown.Count) heads[pc] = "最近";
-                }
-            }
-            list.SetItems(shown, heads);
-            Invalidate();
-        }
-
-        void SelectItem(Item it)
-        {
-            int i = shown.IndexOf(it);
-            if (i >= 0) list.Selected = i;
-        }
-
-        void Choose(int index, bool paste)
-        {
-            if (index < 0 || index >= shown.Count) return;
-            Item it = shown[index];
-            Hide();
-            owner.Apply(it, paste);
-        }
-
-        Item CurrentItem()
-        {
-            int i = list.Selected;
-            return (i >= 0 && i < shown.Count) ? shown[i] : null;
-        }
-
-        void DeleteSelected()
-        {
-            Item it = CurrentItem();
-            if (it == null) return;
-            int i = list.Selected;
-            hist.Remove(it);
-            Reload();
-            if (shown.Count > 0) list.Selected = Math.Min(i, shown.Count - 1);
-        }
-
-        void TogglePin()
-        {
-            Item it = CurrentItem();
-            if (it == null) return;
-            hist.TogglePin(it);
-            Reload();
-            SelectItem(it);
-        }
-
-        void OpenLink(Item it)
-        {
-            try
-            {
-                string url = it.Text.Trim();
-                if (url.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) url = "http://" + url;
-                Hide();
-                Process.Start(url);
-            }
-            catch { }
-        }
-
-        void ShowInFolder(Item it)
-        {
-            try
-            {
-                Hide();
-                Process.Start("explorer.exe", "/select,\"" + it.FilePath + "\"");
-            }
-            catch { }
-        }
-
-        void ShowFileInFolder(Item it)
-        {
-            try
-            {
-                Hide();
-                foreach (string f in it.Paths)
-                {
-                    if (File.Exists(f) || Directory.Exists(f))
-                    {
-                        Process.Start("explorer.exe", "/select,\"" + f + "\"");
-                        return;
-                    }
-                }
-            }
-            catch { }
-        }
-
-        void CycleFilter(int d)
-        {
-            int n = chips.Labels.Length;
-            chips.Selected = (chips.Selected + d + n) % n;
-            chips.Invalidate();
-            Reload();
-        }
-
-        void ApplyTransform(Item it, Func<string, string> f)
-        {
-            string r;
-            try { r = f(it.Text); }
-            catch { return; }
-            Hide();
-            Item ni = owner.Record(r);
-            owner.Apply(ni ?? it, true);
-        }
-
-        void AddTransform(ToolStripMenuItem parent, string title, Item it, Func<string, string> f)
-        {
-            parent.DropDownItems.Add(title, null, delegate { ApplyTransform(it, f); });
-        }
-
-        void ShowItemMenu(int index, Point screenPt)
-        {
-            if (index < 0 || index >= shown.Count) return;
-            Item it = shown[index];
-            ContextMenuStrip m = new ContextMenuStrip();
-            m.Items.Add("粘贴", null, delegate { Choose(index, true); });
-            m.Items.Add("仅复制到剪切板", null, delegate { Choose(index, false); });
-            m.Items.Add(new ToolStripSeparator());
-            m.Items.Add(it.Pinned ? "取消置顶" : "置顶", null, delegate { TogglePin(); });
-
-            if (!it.IsImage && !it.IsFiles)
-            {
-                ToolStripMenuItem sub = new ToolStripMenuItem("粘贴为…");
-                AddTransform(sub, "全部大写", it, delegate(string s) { return s.ToUpperInvariant(); });
-                AddTransform(sub, "全部小写", it, delegate(string s) { return s.ToLowerInvariant(); });
-                AddTransform(sub, "每个单词首字母大写", it, delegate(string s)
-                {
-                    return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(s.ToLower());
-                });
-                AddTransform(sub, "去掉首尾空白", it, delegate(string s) { return s.Trim(); });
-                AddTransform(sub, "合并为一行", it, delegate(string s)
-                {
-                    return Regex.Replace(s, @"\s+", " ").Trim();
-                });
-                AddTransform(sub, "去掉空行", it, delegate(string s)
-                {
-                    return Regex.Replace(s, @"(\r?\n)\s*(\r?\n)+", "$1").Trim();
-                });
-                if (it.Kind == Item.KUrl)
-                    AddTransform(sub, "清理链接追踪参数", it, delegate(string s) { return Util.CleanUrl(s); });
-                m.Items.Add(sub);
-                if (it.Kind == Item.KUrl) m.Items.Add("在浏览器中打开", null, delegate { OpenLink(it); });
-            }
-            else if (it.IsFiles)
-            {
-                ToolStripMenuItem sub2 = new ToolStripMenuItem("粘贴为…");
-                AddTransform(sub2, "文件路径(文本)", it, delegate(string s)
-                {
-                    return s.Replace("\r", "").Replace("\n", "\r\n");
-                });
-                AddTransform(sub2, "文件名(文本)", it, delegate(string s)
-                {
-                    return string.Join("\r\n", s.Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                        .Select(x => System.IO.Path.GetFileName(x.Trim('\r').TrimEnd('\\', '/'))).ToArray());
-                });
-                m.Items.Add(sub2);
-                m.Items.Add("在文件夹中显示", null, delegate { ShowFileInFolder(it); });
-            }
-            else
-            {
-                m.Items.Add("在文件夹中显示", null, delegate { ShowInFolder(it); });
-            }
-
-            m.Items.Add(new ToolStripSeparator());
-            m.Items.Add("删除", null, delegate { DeleteSelected(); });
-
-            Theme.StyleMenu(m);
-            menuOpen = true;
-            m.Closed += delegate
-            {
-                menuOpen = false;
-                BeginInvoke(new MethodInvoker(delegate
-                {
-                    if (Visible && Form.ActiveForm != this) Hide();
-                }));
-            };
-            m.Show(screenPt);
-        }
-
-        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-        {
-            switch (keyData)
-            {
-                case Keys.Escape:
-                    if (sb.Box.Text.Length > 0) sb.Box.Text = "";   // 先清空搜索,再按一次才关闭
-                    else Hide();
-                    return true;
-                case Keys.Down: list.Move(1); return true;
-                case Keys.Up: list.Move(-1); return true;
-                case Keys.PageDown: list.Move(6); return true;
-                case Keys.PageUp: list.Move(-6); return true;
-                case Keys.Enter: Choose(list.Selected, true); return true;
-                case Keys.Enter | Keys.Shift: Choose(list.Selected, false); return true;
-                case Keys.Tab: CycleFilter(1); return true;
-                case Keys.Tab | Keys.Shift: CycleFilter(-1); return true;
-                case Keys.Delete | Keys.Control: DeleteSelected(); return true;
-                case Keys.P | Keys.Control: TogglePin(); return true;
-                case Keys.O | Keys.Control:
-                    {
-                        Item it = CurrentItem();
-                        if (it != null && !it.IsImage && it.Kind == Item.KUrl) OpenLink(it);
-                        return true;
-                    }
-            }
-            if ((keyData & Keys.Control) == Keys.Control)
-            {
-                Keys k = keyData & Keys.KeyCode;
-                if (k >= Keys.D1 && k <= Keys.D9)
-                {
-                    Choose((int)k - (int)Keys.D1, true);
-                    return true;
-                }
-            }
-            return base.ProcessCmdKey(ref msg, keyData);
         }
     }
 
@@ -7976,9 +7618,16 @@ namespace Glean
             Hide();
         }
 
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            if (Visible) { spaceDown = (Native.GetAsyncKeyState(0x20) & 0x8000) != 0; keyPoll.Start(); }
+        }
+
         protected override void OnDeactivate(EventArgs e)
         {
             base.OnDeactivate(e);
+            keyPoll.Stop();   // 不在前台时不用一直查按键(文件夹窗口可能长时间开着)
             if (filesMode) return;   // 文件夹模式不自动收起,方便在别的窗口和面板之间拖文件;Esc 或快捷键关闭
             if (menuOpen || dragging || hiding || resizing || dialogOpen || !Visible) return;
             BeginInvoke(new MethodInvoker(delegate
@@ -8285,8 +7934,14 @@ namespace Glean
         // ================= 文件夹模式 =================
         public void ShowFiles()
         {
-            if (!Visible || hiding) ShowAt();
-            SetMode(true);
+            if (!Visible || hiding)
+            {
+                Config.LastFilesMode = true;   // 直接按文件夹的大小打开,不用先开剪切板再切换
+                ShowAt();
+                return;
+            }
+            if (!filesMode) SetMode(true);
+            BringFrontIfHidden();
         }
 
         void SetMode(bool files)
@@ -9178,13 +8833,13 @@ namespace Glean
                 HttpWebResponse r = ex.Response as HttpWebResponse;
                 if (r != null && r.StatusCode == HttpStatusCode.NotFound)
                     throw new Exception("还没有发布任何版本");
+                if (r != null && ((int)r.StatusCode == 403 || (int)r.StatusCode == 429))
+                    throw new Exception("GitHub 暂时限制了访问次数,请过一会儿再试");
                 throw new Exception("连不上 GitHub,请检查网络");
             }
-            finally
-            {
-                Config.LastUpdateCheck = DateTime.Now.Ticks;
-                Config.Save();
-            }
+            // 只有真的查到了才记时间;没联网的话,一小时后会再试,不用等一整天
+            Config.LastUpdateCheck = DateTime.Now.Ticks;
+            Config.Save();
 
             UpdateInfo u = new UpdateInfo();
             u.Tag = JsonString(json, "tag_name") ?? "";
@@ -9218,7 +8873,11 @@ namespace Glean
         // 在后台检查;结果通过 done 回调(在后台线程上,调用方自己切回界面线程)
         public static void CheckAsync(Action<UpdateInfo, string> done)
         {
-            if (Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
+            if (Interlocked.CompareExchange(ref busy, 1, 0) != 0)
+            {
+                try { done(null, "上一次检查还没结束,请稍候"); } catch { }
+                return;
+            }
             Thread th = new Thread(delegate()
             {
                 UpdateInfo u = null;
@@ -9257,6 +8916,13 @@ namespace Glean
                         int pct = (int)(got * 100 / total);
                         if (pct != last) { last = pct; progress(pct); }
                     }
+                }
+                // 网络中途断开时,下载到的文件会不完整
+                if (total > 0 && got != total)
+                {
+                    fs.Close();
+                    try { File.Delete(file); } catch { }
+                    throw new Exception("下载没有完成(网络中断了),请再试一次");
                 }
             }
             // 1) 有 GitHub 的校验值就核对,不一致说明文件被改过或没下完整
@@ -9604,7 +9270,6 @@ namespace Glean
         const int HotkeyId = 1;
 
         History hist;
-        readonly PopupForm popup;
         readonly ShelfForm shelf;
         readonly NotifyIcon tray;
         ToolStripMenuItem openItem;
@@ -9622,7 +9287,6 @@ namespace Glean
             try { hist = new History(Config.DataPath); }
             catch { hist = new History(Config.DefaultDir); }   // 自定义文件夹不可用时回退到默认位置
             hist.Purge(Config.KeepDays);
-            popup = new PopupForm(this, hist);
             shelf = new ShelfForm(this, hist);
 
             tray = new NotifyIcon();
@@ -9853,7 +9517,6 @@ namespace Glean
 
         void TogglePopup(bool fromHotkey)
         {
-            if (popup.Visible) { popup.Hide(); return; }
             if (shelf.Visible)
             {
                 if (!shelf.BringFrontIfHidden()) shelf.HideShelf();   // 文件夹窗口被挡住了:先叫到前面
@@ -10029,8 +9692,8 @@ namespace Glean
             {
                 if (it.IsImage)
                 {
-                    Bitmap bmp = Util.LoadBitmap(it.FilePath);
-                    Util.Retry(delegate { Clipboard.SetImage(bmp); });
+                    using (Bitmap bmp = Util.LoadBitmap(it.FilePath))
+                        Util.Retry(delegate { Clipboard.SetImage(bmp); });
                 }
                 else if (it.IsFiles)
                 {

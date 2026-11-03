@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.18.0.0")]
-[assembly: AssemblyFileVersion("0.18.0.0")]
+[assembly: AssemblyVersion("0.19.0.0")]
+[assembly: AssemblyFileVersion("0.19.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.18";
+        public const string Version = "0.19";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -10074,13 +10074,38 @@ namespace Glean
             return "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(Number(text));
         }
 
-        // 角标:白色圆角方块 + 公司名的一个字
+        // 角标:白色圆角方块 + 公司名的一个字。
+        // 按字形的实际轮廓居中(中文字体上下留白不一样,按行高居中会偏)
+        static FontFamily badgeFamily;
+
         public static void DrawBadge(Graphics g, Company c, Rectangle r)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             Gfx.FillRound(g, Color.White, r, 7);
-            using (Font f = new Font("Microsoft YaHei UI", Math.Max(6f, r.Height * 0.48f), FontStyle.Bold, GraphicsUnit.Pixel))
-                Gfx.SoftText(g, c.Mark, f, new Rectangle(r.X, r.Y + 1, r.Width, r.Height), c.Color, true);
+            try
+            {
+                if (badgeFamily == null) badgeFamily = new FontFamily("Microsoft YaHei UI");
+                using (GraphicsPath gp = new GraphicsPath())
+                {
+                    gp.AddString(c.Mark, badgeFamily, (int)FontStyle.Bold, r.Height * 0.56f, new PointF(0, 0), StringFormat.GenericTypographic);
+                    RectangleF bb = gp.GetBounds();
+                    // 字太宽(比如英文字母)时按宽度缩小
+                    float k = Math.Min(1f, r.Width * 0.62f / Math.Max(1f, bb.Width));
+                    using (Matrix m = new Matrix())
+                    {
+                        m.Translate(r.X + r.Width / 2f, r.Y + r.Height / 2f);
+                        m.Scale(k, k);
+                        m.Translate(-(bb.X + bb.Width / 2f), -(bb.Y + bb.Height / 2f));
+                        gp.Transform(m);
+                    }
+                    using (SolidBrush b = new SolidBrush(c.Color)) g.FillPath(b, gp);
+                }
+            }
+            catch
+            {
+                using (Font f = new Font("Microsoft YaHei UI", Math.Max(6f, r.Height * 0.48f), FontStyle.Bold, GraphicsUnit.Pixel))
+                    Gfx.SoftText(g, c.Mark, f, r, c.Color, true);
+            }
         }
     }
 

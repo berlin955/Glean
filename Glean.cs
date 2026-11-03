@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.6.0.0")]
-[assembly: AssemblyFileVersion("0.6.0.0")]
+[assembly: AssemblyVersion("0.7.0.0")]
+[assembly: AssemblyFileVersion("0.7.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.6";
+        public const string Version = "0.7";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -2191,6 +2191,7 @@ namespace Glean
     class IconButton : Control
     {
         public string Glyph = "";
+        public bool MoreDots;     // 画成三个点
         bool hover;
 
         public IconButton()
@@ -2207,7 +2208,15 @@ namespace Glean
             Theme t = Theme.Cur;
             Gfx.PaintParentBack(this, g);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (hover) Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 10);
+            if (hover) Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 99);
+            if (MoreDots)
+            {
+                int d = Gfx.S(4), gap = Gfx.S(4);
+                int x0 = (Width - d * 3 - gap * 2) / 2, y0 = (Height - d) / 2;
+                using (SolidBrush b = new SolidBrush(hover ? t.Text : t.Sub))
+                    for (int k = 0; k < 3; k++) g.FillEllipse(b, x0 + k * (d + gap), y0, d, d);
+                return;
+            }
             Gfx.Text(g, Glyph, Gfx.Symbol, new Rectangle(0, 0, Width, Height),
                 hover ? t.Text : t.Sub, TextFormatFlags.HorizontalCenter);
         }
@@ -2237,14 +2246,14 @@ namespace Glean
             Theme t = Theme.Cur;
             Gfx.PaintParentBack(this, g);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            if (hover) Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 10);
+            if (hover) Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 99);
             float cx = Width / 2f, cy = Height / 2f;
             if (!IsPin)
             {
                 using (Pen p = new Pen(hover ? t.Text : t.Sub, Gfx.F(1.8f)))
                 {
                     p.StartCap = p.EndCap = LineCap.Round;
-                    g.DrawLine(p, cx - Gfx.F(6), cy + Gfx.F(1), cx + Gfx.F(6), cy + Gfx.F(1));
+                    g.DrawLine(p, cx - Gfx.F(5), cy + Gfx.F(1), cx + Gfx.F(5), cy + Gfx.F(1));
                 }
                 return;
             }
@@ -2253,7 +2262,7 @@ namespace Glean
             GraphicsState st = g.Save();
             g.TranslateTransform(cx, cy);
             if (!Active) g.RotateTransform(45f);
-            float u = Gfx.F(1f);
+            float u = Gfx.F(0.82f);
             using (GraphicsPath head = new GraphicsPath())
             {
                 head.AddLine(-4 * u, -8 * u, 4 * u, -8 * u);
@@ -2314,7 +2323,10 @@ namespace Glean
     {
         public readonly TextBox Box = new TextBox();
         public string Cue = "";
+        public bool Pill;          // 胶囊形(和"剪切板 | 文件夹"开关一样的全圆角)
+        public bool ShowClear;     // 有文字时右侧显示清除按钮
         bool showIcon = true;
+        bool clearHover;
 
         public bool ShowIcon
         {
@@ -2334,7 +2346,41 @@ namespace Glean
             };
             Controls.Add(Box);
             Height = Gfx.S(40);
+            Box.GotFocus += delegate { Invalidate(); };
+            Box.LostFocus += delegate { Invalidate(); };
+            Box.TextChanged += delegate { if (ShowClear) Invalidate(); };
             ApplyTheme();
+        }
+
+        Rectangle ClearRect
+        {
+            get
+            {
+                int d = Gfx.S(18);
+                return new Rectangle(Width - Gfx.S(Pill ? 10 : 12) - d, (Height - d) / 2, d, d);
+            }
+        }
+
+        bool ClearVisible { get { return ShowClear && Box.Text.Length > 0; } }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            bool h = ClearVisible && ClearRect.Contains(e.Location);
+            if (h != clearHover) { clearHover = h; Cursor = h ? Cursors.Hand : Cursors.IBeam; Invalidate(); }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (clearHover) { clearHover = false; Invalidate(); }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (ClearVisible && ClearRect.Contains(e.Location)) Box.Text = "";
+            Box.Focus();
         }
 
         public void SetCue(string c)
@@ -2352,8 +2398,9 @@ namespace Glean
 
         void LayoutBox()
         {
-            int x = Gfx.S(showIcon ? 38 : 14);
-            Box.SetBounds(x, Math.Max(0, (Height - Box.Height) / 2), Math.Max(10, Width - x - Gfx.S(14)), Box.Height);
+            int x = Pill ? Gfx.S(showIcon ? 34 : 14) : Gfx.S(showIcon ? 38 : 14);
+            int right = ShowClear ? Gfx.S(36) : Gfx.S(14);
+            Box.SetBounds(x, Math.Max(0, (Height - Box.Height) / 2 + (Pill ? 1 : 0)), Math.Max(10, Width - x - right), Box.Height);
         }
 
         protected override void OnResize(EventArgs e)
@@ -2368,14 +2415,37 @@ namespace Glean
             Theme t = Theme.Cur;
             Gfx.PaintParentBack(this, g);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 11);
+            Rectangle all = new Rectangle(0, 0, Width - 1, Height - 1);
+            int rad = Pill ? 99 : 11;
+            bool focused = Box.Focused;
+            Gfx.FillRound(g, t.Input, all, rad);
+            // 一圈很淡的描边;获得焦点时换成主题色的细光圈
+            if (focused) Gfx.DrawRound(g, Color.FromArgb(150, t.Accent), all, rad, Gfx.F(1.4f));
+            else Gfx.DrawRound(g, Color.FromArgb(t.Dark ? 34 : 22, t.Text), all, rad, Gfx.F(1f));
             if (showIcon)
             {
                 int cy = Height / 2;
-                using (Pen p = new Pen(t.Sub, Gfx.F(1.8f)))
+                int ix = Pill ? Gfx.S(13) : Gfx.S(15);
+                using (Pen p = new Pen(focused ? t.Text : t.Sub, Gfx.F(1.7f)))
                 {
-                    g.DrawEllipse(p, Gfx.S(15), cy - Gfx.S(8), Gfx.S(11), Gfx.S(11));
-                    g.DrawLine(p, Gfx.S(24), cy + Gfx.S(2), Gfx.S(29), cy + Gfx.S(7));
+                    p.StartCap = p.EndCap = LineCap.Round;
+                    int d = Gfx.S(Pill ? 10 : 11);
+                    g.DrawEllipse(p, ix, cy - d / 2 - Gfx.S(1), d, d);
+                    g.DrawLine(p, ix + d - Gfx.S(2), cy + d / 2 - Gfx.S(2), ix + d + Gfx.S(3), cy + d / 2 + Gfx.S(3));
+                }
+            }
+            if (ClearVisible)
+            {
+                Rectangle cr = ClearRect;
+                using (SolidBrush cb = new SolidBrush(Color.FromArgb(clearHover ? 150 : 90, t.Sub)))
+                    g.FillEllipse(cb, cr);
+                using (Pen xp = new Pen(t.Input, Gfx.F(1.6f)))
+                {
+                    xp.StartCap = xp.EndCap = LineCap.Round;
+                    int k = Gfx.S(4);
+                    int cx = cr.X + cr.Width / 2, cy2 = cr.Y + cr.Height / 2;
+                    g.DrawLine(xp, cx - k, cy2 - k, cx + k, cy2 + k);
+                    g.DrawLine(xp, cx - k, cy2 + k, cx + k, cy2 - k);
                 }
             }
         }
@@ -2848,7 +2918,7 @@ namespace Glean
             sb.SetBounds(Gfx.S(16), Gfx.S(16), W - Gfx.S(16 + 16 + 44), Gfx.S(44));
             sb.Box.TextChanged += delegate { Reload(); };
 
-            gear.Glyph = "⚙";
+            gear.MoreDots = true;   // 设置
             gear.SetBounds(W - Gfx.S(16 + 38), Gfx.S(19), Gfx.S(38), Gfx.S(38));
             gear.Click += delegate { Hide(); owner.ShowSettingsFromPopup(); };
 
@@ -7265,7 +7335,6 @@ namespace Glean
         readonly WinButton pinBtn = new WinButton();
         readonly WinButton minBtn = new WinButton();
         readonly System.Windows.Forms.Timer glassTimer = new System.Windows.Forms.Timer();
-        Rectangle clipRect;       // 列表模式下剪切板弹出的位置
         bool taskbarShown;
         bool filesMode;
         int folderIdx = -1;
@@ -7295,6 +7364,9 @@ namespace Glean
             DoubleBuffered = true;
 
             sb.Cue = "直接打字即可搜索…";
+            sb.Pill = true;
+            sb.ShowClear = true;
+            sb.Box.Font = Gfx.UI;
             sb.Box.TextChanged += delegate { Reload(); };
             sb.Box.MouseWheel += delegate(object s, MouseEventArgs e) { strip.ScrollBy(-e.Delta / 120f * Gfx.S(220)); };
 
@@ -7315,7 +7387,7 @@ namespace Glean
             };
             tabs.RightClicked += OnTabRightClick;
 
-            gear.Glyph = "⚙";
+            gear.MoreDots = true;   // 设置
             gear.Click += delegate { HideNow(); owner.ShowSettingsFromPopup(); };
 
             Wire(cardView);
@@ -7474,12 +7546,14 @@ namespace Glean
             {
                 // 列表模式:竖着排,搜索在上,分类在中,列表在下,快捷键提示在底部
                 int pad = Gfx.S(16);
-                modeSwitch.SetBounds(pad, pad + Gfx.S(5), Gfx.S(124), Gfx.S(30));
-                int rightX = Width - pad - Gfx.S(38);
-                gear.SetBounds(rightX, pad + Gfx.S(1), Gfx.S(38), Gfx.S(38));
-                if (pinBtn.Visible) { rightX -= Gfx.S(36); pinBtn.SetBounds(rightX, pad + Gfx.S(3), Gfx.S(34), Gfx.S(34)); }
-                if (minBtn.Visible) { rightX -= Gfx.S(36); minBtn.SetBounds(rightX, pad + Gfx.S(3), Gfx.S(34), Gfx.S(34)); }
-                sb.SetBounds(pad + Gfx.S(132), pad, Math.Max(Gfx.S(60), rightX - Gfx.S(6) - pad - Gfx.S(132)), Gfx.S(40));
+                int hh = Gfx.S(32), hy = pad + Gfx.S(4);   // 顶部一排:开关、搜索框、按钮同一高度
+                modeSwitch.SetBounds(pad, hy, Gfx.S(124), hh);
+                int rightX = Width - pad - hh;
+                gear.SetBounds(rightX, hy, hh, hh);
+                int sm = Gfx.S(28);
+                if (pinBtn.Visible) { rightX -= sm + Gfx.S(2); pinBtn.SetBounds(rightX, hy + (hh - sm) / 2, sm, sm); }
+                if (minBtn.Visible) { rightX -= sm + Gfx.S(2); minBtn.SetBounds(rightX, hy + (hh - sm) / 2, sm, sm); }
+                sb.SetBounds(pad + Gfx.S(132), hy, Math.Max(Gfx.S(60), rightX - Gfx.S(8) - pad - Gfx.S(132)), hh);
                 tabs.SetBounds(pad, Gfx.S(66), Width - pad * 2, Gfx.S(32));
                 listView.SetBounds(Gfx.S(4), Gfx.S(106), Width - Gfx.S(8), Math.Max(10, Height - Gfx.S(106) - Gfx.S(46)));
                 folderTabs.Bounds = tabs.Bounds;
@@ -7488,9 +7562,10 @@ namespace Glean
                 return;
             }
             int top = Gfx.S(14);
-            modeSwitch.SetBounds(Gfx.S(20), top + Gfx.S(3), Gfx.S(132), Gfx.S(30));
-            sb.SetBounds(Gfx.S(162), top, Gfx.S(230), Gfx.S(36));
-            gear.SetBounds(Width - Gfx.S(20 + 36), top, Gfx.S(36), Gfx.S(36));
+            int hh2 = Gfx.S(32), hy2 = top + Gfx.S(2);
+            modeSwitch.SetBounds(Gfx.S(20), hy2, Gfx.S(132), hh2);
+            sb.SetBounds(Gfx.S(162), hy2, Gfx.S(230), hh2);
+            gear.SetBounds(Width - Gfx.S(20) - hh2, hy2, hh2, hh2);
             int tx = sb.Right + Gfx.S(28);
             tabs.SetBounds(tx, top + Gfx.S(2), Math.Max(Gfx.S(120), gear.Left - Gfx.S(230) - tx), Gfx.S(32));
             cardView.SetBounds(0, Gfx.S(60), Width, Math.Max(10, Height - Gfx.S(60) - Gfx.S(6)));
@@ -7589,53 +7664,42 @@ namespace Glean
             Invalidate();
         }
 
-        static bool ParseRect(string s, out Rectangle r)
+        static Size ClipSize { get { return new Size(Gfx.S(480), Gfx.S(600)); } }
+
+        // 文件夹窗口上次调整后的大小(位置不记,每次都在鼠标旁出现)
+        static Size FolderSize()
         {
-            r = Rectangle.Empty;
             try
             {
-                string[] p = (s ?? "").Split(',');
-                if (p.Length != 4) return false;
-                r = new Rectangle(int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2]), int.Parse(p[3]));
-                return r.Width > 0 && r.Height > 0;
-            }
-            catch { return false; }
-        }
-
-        // 文件夹窗口上次的位置和大小;没记过、或者那块屏幕已经不在了,就用剪切板弹出的位置
-        Rectangle FolderRect()
-        {
-            Rectangle r;
-            if (ParseRect(Config.FolderWin, out r))
-            {
-                foreach (Screen sc in Screen.AllScreens)
+                string[] p = (Config.FolderWin ?? "").Split(',');
+                if (p.Length >= 2)
                 {
-                    Rectangle wa = sc.WorkingArea;
-                    Rectangle hit = Rectangle.Intersect(wa, r);
-                    if (hit.Width >= Gfx.S(120) && hit.Height >= Gfx.S(80))
-                    {
-                        r.Width = Math.Min(Math.Max(r.Width, Gfx.S(400)), wa.Width);
-                        r.Height = Math.Min(Math.Max(r.Height, Gfx.S(340)), wa.Height);
-                        return r;
-                    }
+                    int w = int.Parse(p[p.Length - 2]), h = int.Parse(p[p.Length - 1]);
+                    return new Size(Math.Max(w, Gfx.S(400)), Math.Max(h, Gfx.S(340)));
                 }
             }
-            return clipRect;
+            catch { }
+            return ClipSize;
         }
 
-        void SaveFolderRect()
+        void SaveFolderSize()
         {
             if (!FolderWindow || WindowState != FormWindowState.Normal) return;
-            Config.FolderWin = Left + "," + Top + "," + Width + "," + Height;
+            Config.FolderWin = Width + "," + Height;
             Config.Save();
         }
 
-        // 在剪切板和文件夹之间切换时,窗口回到各自的位置
+        // 在剪切板和文件夹之间切换时:左上角不动,换成各自的大小
         void SwitchBounds()
         {
             if (!listMode || !Visible) return;
             if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
-            Rectangle target = filesMode ? FolderRect() : clipRect;
+            Size sz = filesMode ? FolderSize() : ClipSize;
+            Rectangle wa = Screen.FromControl(this).WorkingArea;
+            int w = Math.Min(sz.Width, wa.Width), h = Math.Min(sz.Height, wa.Height);
+            int x = Math.Max(wa.Left, Math.Min(Left, wa.Right - w));
+            int y = Math.Max(wa.Top, Math.Min(Top, wa.Bottom - h));
+            Rectangle target = new Rectangle(x, y, w, h);
             if (target != Bounds)
             {
                 Bounds = target;
@@ -7657,55 +7721,78 @@ namespace Glean
             return true;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        struct WinRect { public int Left, Top, Right, Bottom; }
+        // ---------------- 文件夹窗口:自己处理拖动和调整大小(四个方向都能随意拖)
+        int dragEdge = -1;            // -1 没在拖;0 移动;其余是边的组合:1 左 2 右 4 上 8 下
+        Point dragStartCur;
+        Rectangle dragStartBounds;
 
-        protected override void WndProc(ref Message m)
+        int EdgeAt(Point p)
         {
-            const int WM_NCHITTEST = 0x84, WM_MOVING = 0x216, WM_EXITSIZEMOVE = 0x232;
-            const int WM_NCLBUTTONDBLCLK = 0xA3, WM_NCRBUTTONDOWN = 0xA4, WM_NCRBUTTONUP = 0xA5;
-            if (m.Msg == WM_NCHITTEST && FolderWindow && WindowState == FormWindowState.Normal)
+            int b = Gfx.S(8), e = 0;
+            if (p.X < b) e |= 1; else if (p.X >= Width - b) e |= 2;
+            if (p.Y < b) e |= 4; else if (p.Y >= Height - b) e |= 8;
+            return e;
+        }
+
+        static Cursor CursorFor(int e)
+        {
+            if (e == 5 || e == 10) return Cursors.SizeNWSE;
+            if (e == 6 || e == 9) return Cursors.SizeNESW;
+            if (e == 1 || e == 2) return Cursors.SizeWE;
+            if (e == 4 || e == 8) return Cursors.SizeNS;
+            return Cursors.SizeAll;
+        }
+
+        bool BeginWindowDrag(MouseEventArgs e)
+        {
+            if (!FolderWindow || WindowState != FormWindowState.Normal || e.Button != MouseButtons.Left) return false;
+            dragEdge = EdgeAt(e.Location);
+            dragStartCur = Cursor.Position;
+            dragStartBounds = Bounds;
+            Capture = true;
+            return true;
+        }
+
+        bool DoWindowDrag()
+        {
+            if (dragEdge < 0) return false;
+            Point c = Cursor.Position;
+            int dx = c.X - dragStartCur.X, dy = c.Y - dragStartCur.Y;
+            Rectangle r = dragStartBounds;
+            Rectangle wa = Screen.FromPoint(c).WorkingArea;
+            int snap = Gfx.S(14);
+            if (dragEdge == 0)
             {
-                base.WndProc(ref m);
-                if (m.Result.ToInt64() != 1) return;   // 只处理窗口自己的空白处
-                long lp = m.LParam.ToInt64();
-                Point pt = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
-                int b = Gfx.S(7);
-                bool l = pt.X < b, r = pt.X >= Width - b, t = pt.Y < b, bt = pt.Y >= Height - b;
-                int ht = 2;   // 空白处:按住就能拖动窗口
-                if (t && l) ht = 13; else if (t && r) ht = 14; else if (bt && l) ht = 16; else if (bt && r) ht = 17;
-                else if (l) ht = 10; else if (r) ht = 11; else if (t) ht = 12; else if (bt) ht = 15;
-                m.Result = (IntPtr)ht;
-                return;
-            }
-            if (FolderWindow && (m.Msg == WM_NCLBUTTONDBLCLK || m.Msg == WM_NCRBUTTONDOWN || m.Msg == WM_NCRBUTTONUP))
-            {
-                m.Result = IntPtr.Zero;   // 不要系统菜单,也不要双击最大化
-                return;
-            }
-            if (m.Msg == WM_MOVING && FolderWindow)
-            {
+                int x = r.X + dx, y = r.Y + dy;
                 // 靠近屏幕边缘时自动贴齐
-                WinRect wr = (WinRect)Marshal.PtrToStructure(m.LParam, typeof(WinRect));
-                Rectangle wa = Screen.FromPoint(Cursor.Position).WorkingArea;
-                int snap = Gfx.S(14), w = wr.Right - wr.Left, h = wr.Bottom - wr.Top;
-                if (Math.Abs(wr.Left - wa.Left) < snap) wr.Left = wa.Left;
-                else if (Math.Abs(wr.Left + w - wa.Right) < snap) wr.Left = wa.Right - w;
-                if (Math.Abs(wr.Top - wa.Top) < snap) wr.Top = wa.Top;
-                else if (Math.Abs(wr.Top + h - wa.Bottom) < snap) wr.Top = wa.Bottom - h;
-                wr.Right = wr.Left + w;
-                wr.Bottom = wr.Top + h;
-                Marshal.StructureToPtr(wr, m.LParam, false);
-                m.Result = (IntPtr)1;
-                return;
+                if (Math.Abs(x - wa.Left) < snap) x = wa.Left;
+                else if (Math.Abs(x + r.Width - wa.Right) < snap) x = wa.Right - r.Width;
+                if (Math.Abs(y - wa.Top) < snap) y = wa.Top;
+                else if (Math.Abs(y + r.Height - wa.Bottom) < snap) y = wa.Bottom - r.Height;
+                Location = new Point(x, y);
+                return true;
             }
-            base.WndProc(ref m);
-            if (m.Msg == WM_EXITSIZEMOVE && FolderWindow)
-            {
-                SaveFolderRect();
-                RefreshGlass();
-                if (quick.Visible) ShowFileQuick();
-            }
+            int minW = Gfx.S(400), minH = Gfx.S(340);
+            int left = r.Left, top = r.Top, right = r.Right, bottom = r.Bottom;
+            if ((dragEdge & 1) != 0) left = Math.Min(r.Right - minW, r.Left + dx);
+            if ((dragEdge & 2) != 0) right = Math.Max(r.Left + minW, r.Right + dx);
+            if ((dragEdge & 4) != 0) top = Math.Min(r.Bottom - minH, r.Top + dy);
+            if ((dragEdge & 8) != 0) bottom = Math.Max(r.Top + minH, r.Bottom + dy);
+            SetBounds(left, top, right - left, bottom - top);
+            Update();
+            return true;
+        }
+
+        bool EndWindowDrag()
+        {
+            if (dragEdge < 0) return false;
+            bool sized = dragEdge > 0;
+            dragEdge = -1;
+            Capture = false;
+            if (sized) SaveFolderSize();
+            RefreshGlass();
+            if (quick.Visible) ShowFileQuick();
+            return true;
         }
 
         // 按当前的透明度、主题、面板高度合成成品;很快,随时可以重做
@@ -7809,19 +7896,13 @@ namespace Glean
             {
                 Point cur = Cursor.Position;
                 Rectangle wa2 = Screen.FromPoint(cur).WorkingArea;
-                int lw = Gfx.S(480), lh = Gfx.S(600);
+                Size want = filesMode ? FolderSize() : ClipSize;   // 文件夹窗口用上次调好的大小
+                int lw = Math.Min(want.Width, wa2.Width), lh = Math.Min(want.Height, wa2.Height);
                 int lx, ly;
                 if (Config.PopupAtCursor) { lx = cur.X; ly = cur.Y; }
                 else { lx = wa2.Left + (wa2.Width - lw) / 2; ly = wa2.Top + (wa2.Height - lh) / 3; }
                 lx = Math.Max(wa2.Left, Math.Min(lx, wa2.Right - lw));
                 ly = Math.Max(wa2.Top, Math.Min(ly, wa2.Bottom - lh));
-                clipRect = new Rectangle(lx, ly, lw, lh);
-                if (filesMode)
-                {
-                    // 文件夹窗口:回到上次放的位置、上次的大小
-                    Rectangle fr = FolderRect();
-                    lx = fr.X; ly = fr.Y; lw = fr.Width; lh = fr.Height;
-                }
                 hiding = false;
                 BuildBackdrop(new Rectangle(lx, ly, lw, lh));
                 SetBounds(lx, ly + Gfx.S(10), lw, lh);
@@ -8830,6 +8911,7 @@ namespace Glean
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            if (BeginWindowDrag(e)) return;
             if (listMode || e.Button != MouseButtons.Left || e.Y >= GripH) return;
             if (e.Clicks >= 2) { SetZoom(1f, true); return; }   // 双击小横条恢复默认大小
             resizing = true;
@@ -8841,6 +8923,8 @@ namespace Glean
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (DoWindowDrag()) return;
+            if (FolderWindow) { Cursor = CursorFor(EdgeAt(e.Location)); return; }
             if (resizing)
             {
                 int newH = resizeStartH + (resizeStartY - Cursor.Position.Y);
@@ -8854,6 +8938,7 @@ namespace Glean
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (EndWindowDrag()) return;
             if (resizing)
             {
                 resizing = false;
@@ -8865,7 +8950,7 @@ namespace Glean
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (!resizing) Cursor = Cursors.Default;
+            if (!resizing && dragEdge < 0) Cursor = Cursors.Default;
         }
 
         // 空格:中文输入法开着时,空格键会变成"输入法处理键",这里把它认回来;

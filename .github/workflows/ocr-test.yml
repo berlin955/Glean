@@ -7,6 +7,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: install Chinese OCR
+        shell: pwsh
+        run: |
+          Get-WindowsCapability -Online | Where-Object Name -like 'Language.OCR*' | Format-Table Name, State
+          Add-WindowsCapability -Online -Name "Language.OCR~~~zh-CN~0.0.1.0"
       - name: build and run
         shell: cmd
         run: |

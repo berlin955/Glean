@@ -18,7 +18,7 @@ namespace OcrTestNs
                     Console.WriteLine("lang: " + tl.GetProperty("LanguageTag").GetValue(l, null));
             }
             catch (Exception ex) { Console.WriteLine("lang list error: " + ex); }
-            string[] samples = { "Hello Glean OCR test 12345", "拾光 识别测试 你好世界" };
+            string[] samples = { "Hello Glean OCR test 12345", "拾光 识别测试 你好世界", "复制的文字:Windows 10 自带识别,价格 128.5 元。" };
             for (int i = 0; i < samples.Length; i++)
             {
                 string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ocr-sample-" + i + ".png");

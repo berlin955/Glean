@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.15.0.0")]
-[assembly: AssemblyFileVersion("0.15.0.0")]
+[assembly: AssemblyVersion("0.16.0.0")]
+[assembly: AssemblyFileVersion("0.16.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.15";
+        public const string Version = "0.16";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -1105,8 +1105,8 @@ namespace Glean
         DateTime infoStamp;
         public int W, H;
 
-        public const int KText = 0, KUrl = 1, KEmail = 2, KColor = 3, KPath = 4, KNumber = 5, KFiles = 6;
-        public static readonly string[] KindLabels = new string[] { "文字", "链接", "邮箱", "颜色", "路径", "数字", "文件" };
+        public const int KText = 0, KUrl = 1, KEmail = 2, KColor = 3, KPath = 4, KNumber = 5, KFiles = 6, KTrack = 7;
+        public static readonly string[] KindLabels = new string[] { "文字", "链接", "邮箱", "颜色", "路径", "数字", "文件", "快递单号" };
 
         static readonly Regex ReUrl = new Regex(@"^(https?://|www\.)\S+$", RegexOptions.IgnoreCase);
         static readonly Regex ReEmail = new Regex(@"^[\w.+\-]+@[\w\-]+(\.[\w\-]+)+$");
@@ -1133,6 +1133,7 @@ namespace Glean
             string t = Text.Trim();
             if (t.Length == 0 || t.Length > 2048 || t.IndexOf('\n') >= 0) return KText;
             if (ReUrl.IsMatch(t)) return KUrl;
+            if (Courier.Detect(t) != null) return KTrack;
             if (ReEmail.IsMatch(t)) return KEmail;
             if (ReColor.IsMatch(t)) return KColor;
             if (RePath.IsMatch(t)) return KPath;
@@ -3046,7 +3047,7 @@ namespace Glean
             else
             {
                 string gs = kind == Item.KUrl ? "↗" : kind == Item.KEmail ? "@" :
-                            kind == Item.KPath ? "/" : kind == Item.KNumber ? "#" : "Aa";
+                            kind == Item.KPath ? "/" : kind == Item.KNumber ? "#" : kind == Item.KTrack ? "单" : "Aa";
                 Gfx.Text(g, gs, Gfx.Bold, gl, hc, TextFormatFlags.HorizontalCenter);
             }
 
@@ -4291,6 +4292,7 @@ namespace Glean
                 case Item.KColor: return it.SwatchColor();
                 case Item.KPath: return Color.FromArgb(232, 136, 38);
                 case Item.KNumber: return Color.FromArgb(32, 160, 190);
+                case Item.KTrack: return Color.FromArgb(214, 112, 52);
             }
             return Theme.Cur.Accent;
         }
@@ -4363,6 +4365,11 @@ namespace Glean
                 case Item.KColor: return "颜色";
                 case Item.KPath: return "路径";
                 case Item.KNumber: return "数字";
+                case Item.KTrack:
+                    {
+                        string[] c = Courier.Detect(it.Text);
+                        return c != null ? c[0] : "快递单号";
+                    }
             }
             return "文本";
         }
@@ -7972,6 +7979,55 @@ namespace Glean
             }, null);
         }
 
+        // ---------------- 扫码带走
+        static ShareForm shareWin;
+
+        void OpenUrl(string url)
+        {
+            try { HideNow(); Process.Start(url); } catch { }
+        }
+
+        void ShareItem(Item it)
+        {
+            if (it.IsImage) ShareToPhone("截图 · " + it.TimeAgo(), null, new List<string> { it.FilePath });
+            else if (it.IsFiles) ShareToPhone(it.FileTitle(), null, it.Paths.Where(x => File.Exists(x)).Take(20).ToList());
+            else ShareToPhone(CardLook.Title(it) + " · " + it.TimeAgo(), it.Text ?? "", null);
+        }
+
+        // 短文字直接编进二维码(不用联网);图片、文件、长文字由本机临时开一个只服务这条内容的小网页
+        void ShareToPhone(string title, string text, List<string> files)
+        {
+            HideNow();
+            if (shareWin != null && !shareWin.IsDisposed) shareWin.Close();
+            bool[,] m;
+            if (text != null && Encoding.UTF8.GetByteCount(text) <= 700)
+            {
+                m = QrCode.Encode(Encoding.UTF8.GetBytes(text));
+                if (m != null)
+                {
+                    bool isUrl = Regex.IsMatch(text.Trim(), @"^(https?://|www\.)\S+$", RegexOptions.IgnoreCase);
+                    shareWin = new ShareForm(title, m, isUrl ? "扫码后手机会直接打开这个链接。不需要联网传输,用手机相机或微信扫一扫都可以"
+                                                              : "文字已经在二维码里,扫一下就能看到、复制。不需要联网,用手机相机或微信扫一扫都可以", null, false);
+                    shareWin.Show();
+                    shareWin.Activate();
+                    return;
+                }
+            }
+            string err;
+            string url = ShareServer.Start(title, text, files, out err);
+            if (url == null) { owner.Balloon("扫码带走失败:" + err, true); return; }
+            m = QrCode.Encode(Encoding.UTF8.GetBytes(url));
+            if (m == null) { ShareServer.Stop(); return; }
+            bool hasImage = files != null && files.Any(f => ShareImageExts.Contains(System.IO.Path.GetExtension(f)));
+            shareWin = new ShareForm(title, m,
+                "手机和电脑连同一个 Wi-Fi,用手机相机或浏览器扫码打开" + (hasImage ? ",图片长按即可保存" : "") + "。关掉这个窗口或 10 分钟后失效。" +
+                "第一次使用时,如果 Windows 询问是否允许 Glean 访问网络,请选择“允许”", url, true);
+            shareWin.Show();
+            shareWin.Activate();
+        }
+
+        static readonly HashSet<string> ShareImageExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp" };
+
         // ---------------- 图片转文字
         static readonly HashSet<string> OcrExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -8164,6 +8220,7 @@ namespace Glean
             m.Items.Add("粘贴", null, delegate { Choose(index, true); });
             m.Items.Add("仅复制到剪切板", null, delegate { Choose(index, false); });
             m.Items.Add("快速预览(空格)", null, delegate { ShowQuick(); });
+            m.Items.Add("扫码带走(手机)", null, delegate { ShareItem(it); });
             m.Items.Add(new ToolStripSeparator());
             m.Items.Add(it.Pinned ? "取消置顶" : "置顶", null, delegate { TogglePin(); });
             m.Items.Add("重命名…", null, delegate { RenameCard(it); });
@@ -8200,6 +8257,11 @@ namespace Glean
                     AddTransform(sub, "清理链接追踪参数", it, delegate(string s) { return Util.CleanUrl(s); });
                 m.Items.Add(sub);
                 if (it.Kind == Item.KUrl) m.Items.Add("在浏览器中打开", null, delegate { OpenLink(it); });
+                if (it.Kind == Item.KTrack)
+                {
+                    m.Items.Add("查物流(快递100)", null, delegate { OpenUrl(Courier.TrackUrl(it.Text)); });
+                    m.Items.Add("用百度查物流", null, delegate { OpenUrl(Courier.SearchUrl(it.Text)); });
+                }
             }
             else if (it.IsFiles)
             {
@@ -8601,6 +8663,12 @@ namespace Glean
                 m.Items.Add(new ToolStripSeparator());
             }
             m.Items.Add(single ? "复制" : "复制 " + paths.Count + " 项", null, delegate { CopyFiles(paths); });
+            List<string> shareable = paths.Where(x => File.Exists(x)).Take(20).ToList();
+            if (shareable.Count > 0)
+                m.Items.Add("扫码带走(手机)", null, delegate
+                {
+                    ShareToPhone(shareable.Count == 1 ? System.IO.Path.GetFileName(shareable[0]) : shareable.Count + " 个文件", null, shareable);
+                });
             m.Items.Add("复制路径", null, delegate
             {
                 try
@@ -9159,6 +9227,694 @@ namespace Glean
         public Version Ver;
         public string Tag, Notes, Url, Sha256, PageUrl;
         public long Size;
+    }
+
+    // ================================================================ 二维码(手机扫码带走)
+    // 按二维码标准(ISO 18004)自己生成:字节模式、纠错等级 M、版本 1~40 自动选择
+    static class QrCode
+    {
+        static readonly int[] EccPerBlockM = { -1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28 };
+        static readonly int[] BlocksM = { -1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49 };
+
+        static int RawModules(int ver)
+        {
+            int r = (16 * ver + 128) * ver + 64;
+            if (ver >= 2)
+            {
+                int na = ver / 7 + 2;
+                r -= (25 * na - 10) * na - 55;
+                if (ver >= 7) r -= 36;
+            }
+            return r;
+        }
+
+        static int DataCodewords(int ver) { return RawModules(ver) / 8 - EccPerBlockM[ver] * BlocksM[ver]; }
+
+        // 最多能装多少字节(UTF-8)
+        public static int MaxBytes { get { return (DataCodewords(40) * 8 - 4 - 16) / 8; } }
+        public static int LastMask;   // 最后一次选用的掩码
+
+        // 返回 true/false 矩阵(true = 深色),装不下返回 null
+        public static bool[,] Encode(byte[] data)
+        {
+            // 有非英文字符时,先写一个"内容是 UTF-8"的标记(ECI 26),扫码软件就不用猜编码,中文不会乱码
+            bool eci = false;
+            foreach (byte b0 in data) if (b0 >= 0x80) { eci = true; break; }
+            int ver = 0;
+            for (int v = 1; v <= 40; v++)
+            {
+                int cc = v < 10 ? 8 : 16;
+                if ((eci ? 12 : 0) + 4 + cc + data.Length * 8 <= DataCodewords(v) * 8) { ver = v; break; }
+            }
+            if (ver == 0) return null;
+
+            // 1) 数据比特
+            List<bool> bits = new List<bool>();
+            Action<int, int> put = delegate(int val, int n) { for (int i = n - 1; i >= 0; i--) bits.Add(((val >> i) & 1) != 0); };
+            if (eci) { put(7, 4); put(26, 8); }
+            put(4, 4);
+            put(data.Length, ver < 10 ? 8 : 16);
+            foreach (byte b in data) put(b, 8);
+            int cap = DataCodewords(ver) * 8;
+            put(0, Math.Min(4, cap - bits.Count));
+            while (bits.Count % 8 != 0) bits.Add(false);
+            byte[] dataCw = new byte[DataCodewords(ver)];
+            for (int i = 0; i < bits.Count / 8; i++)
+            {
+                int v = 0;
+                for (int j = 0; j < 8; j++) v = (v << 1) | (bits[i * 8 + j] ? 1 : 0);
+                dataCw[i] = (byte)v;
+            }
+            for (int i = bits.Count / 8, k = 0; i < dataCw.Length; i++, k++) dataCw[i] = (byte)(k % 2 == 0 ? 0xEC : 0x11);
+
+            // 2) 分块 + 纠错码 + 交织
+            int numBlocks = BlocksM[ver], eccLen = EccPerBlockM[ver];
+            int raw = RawModules(ver) / 8;
+            int numShort = numBlocks - raw % numBlocks;
+            int shortLen = raw / numBlocks;
+            byte[] div = RsDivisor(eccLen);
+            List<byte[]> blocks = new List<byte[]>();
+            for (int i = 0, k = 0; i < numBlocks; i++)
+            {
+                int len = shortLen - eccLen + (i < numShort ? 0 : 1);
+                byte[] dat = new byte[len];
+                Array.Copy(dataCw, k, dat, 0, len);
+                k += len;
+                byte[] ecc = RsRemainder(dat, div);
+                byte[] blk = new byte[shortLen + 1];
+                Array.Copy(dat, 0, blk, 0, len);
+                if (i < numShort) { Array.Copy(ecc, 0, blk, len + 1, eccLen); }
+                else Array.Copy(ecc, 0, blk, len, eccLen);
+                blocks.Add(blk);
+            }
+            List<byte> all = new List<byte>();
+            for (int i = 0; i < shortLen + 1; i++)
+                for (int j = 0; j < numBlocks; j++)
+                    if (i != shortLen - eccLen || j >= numShort) all.Add(blocks[j][i]);
+
+            // 3) 画图形
+            int size = ver * 4 + 17;
+            bool[,] mod = new bool[size, size];   // [y, x]
+            bool[,] fn = new bool[size, size];
+            Action<int, int, bool> set = delegate(int x, int y, bool d) { mod[y, x] = d; fn[y, x] = true; };
+            for (int i = 0; i < size; i++) { set(6, i, i % 2 == 0); set(i, 6, i % 2 == 0); }
+            Action<int, int> finder = delegate(int cx, int cy)
+            {
+                for (int dy = -4; dy <= 4; dy++)
+                    for (int dx = -4; dx <= 4; dx++)
+                    {
+                        int dist = Math.Max(Math.Abs(dx), Math.Abs(dy));
+                        int xx = cx + dx, yy = cy + dy;
+                        if (xx >= 0 && xx < size && yy >= 0 && yy < size) set(xx, yy, dist != 2 && dist != 4);
+                    }
+            };
+            finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+            int[] ap = AlignPositions(ver, size);
+            for (int i = 0; i < ap.Length; i++)
+                for (int j = 0; j < ap.Length; j++)
+                {
+                    if ((i == 0 && j == 0) || (i == 0 && j == ap.Length - 1) || (i == ap.Length - 1 && j == 0)) continue;
+                    for (int dy = -2; dy <= 2; dy++)
+                        for (int dx = -2; dx <= 2; dx++)
+                            set(ap[i] + dx, ap[j] + dy, Math.Max(Math.Abs(dx), Math.Abs(dy)) != 1);
+                }
+            DrawFormat(mod, fn, size, 0);
+            if (ver >= 7)
+            {
+                int rem = ver;
+                for (int i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >> 11) * 0x1F25);
+                int vb = ver << 12 | rem;
+                for (int i = 0; i < 18; i++)
+                {
+                    bool bit = ((vb >> i) & 1) != 0;
+                    int a = size - 11 + i % 3, b = i / 3;
+                    set(a, b, bit);
+                    set(b, a, bit);
+                }
+            }
+
+            // 4) 放数据(之字形)
+            int bi = 0;
+            for (int right = size - 1; right >= 1; right -= 2)
+            {
+                if (right == 6) right = 5;
+                for (int vert = 0; vert < size; vert++)
+                    for (int j = 0; j < 2; j++)
+                    {
+                        int x = right - j;
+                        bool up = ((right + 1) & 2) == 0;
+                        int y = up ? size - 1 - vert : vert;
+                        if (!fn[y, x] && bi < all.Count * 8)
+                        {
+                            mod[y, x] = ((all[bi >> 3] >> (7 - (bi & 7))) & 1) != 0;
+                            bi++;
+                        }
+                    }
+            }
+
+            // 5) 选一个最容易扫的掩码
+            int best = 0, bestScore = int.MaxValue;
+            for (int m = 0; m < 8; m++)
+            {
+                ApplyMask(mod, fn, size, m);
+                DrawFormat(mod, fn, size, m);
+                int sc = Penalty(mod, size);
+                if (sc < bestScore) { bestScore = sc; best = m; }
+                ApplyMask(mod, fn, size, m);   // 再异或一次 = 还原
+            }
+            ApplyMask(mod, fn, size, best);
+            DrawFormat(mod, fn, size, best);
+            LastMask = best;
+            return mod;
+        }
+
+        static int[] AlignPositions(int ver, int size)
+        {
+            if (ver == 1) return new int[0];
+            int na = ver / 7 + 2;
+            int step = ver == 32 ? 26 : (ver * 4 + na * 2 + 1) / (na * 2 - 2) * 2;
+            int[] r = new int[na];
+            r[0] = 6;
+            for (int i = na - 1, pos = size - 7; i >= 1; i--, pos -= step) r[i] = pos;
+            return r;
+        }
+
+        static void DrawFormat(bool[,] mod, bool[,] fn, int size, int mask)
+        {
+            int data = 0 << 3 | mask;   // 纠错等级 M 的格式位是 00
+            int rem = data;
+            for (int i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >> 9) * 0x537);
+            int bits = (data << 10 | rem) ^ 0x5412;
+            Action<int, int, bool> set = delegate(int x, int y, bool d) { mod[y, x] = d; fn[y, x] = true; };
+            Func<int, bool> bit = delegate(int i) { return ((bits >> i) & 1) != 0; };
+            for (int i = 0; i <= 5; i++) set(8, i, bit(i));
+            set(8, 7, bit(6));
+            set(8, 8, bit(7));
+            set(7, 8, bit(8));
+            for (int i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+            for (int i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+            for (int i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+            set(8, size - 8, true);
+        }
+
+        static void ApplyMask(bool[,] mod, bool[,] fn, int size, int m)
+        {
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    if (fn[y, x]) continue;
+                    bool inv;
+                    switch (m)
+                    {
+                        case 0: inv = (x + y) % 2 == 0; break;
+                        case 1: inv = y % 2 == 0; break;
+                        case 2: inv = x % 3 == 0; break;
+                        case 3: inv = (x + y) % 3 == 0; break;
+                        case 4: inv = (x / 3 + y / 2) % 2 == 0; break;
+                        case 5: inv = x * y % 2 + x * y % 3 == 0; break;
+                        case 6: inv = (x * y % 2 + x * y % 3) % 2 == 0; break;
+                        default: inv = ((x + y) % 2 + x * y % 3) % 2 == 0; break;
+                    }
+                    if (inv) mod[y, x] = !mod[y, x];
+                }
+        }
+
+        // 简化的评分:连续同色、2×2 色块、深浅比例(都是越低越好)
+        static int Penalty(bool[,] mod, int size)
+        {
+            int score = 0, dark = 0;
+            for (int y = 0; y < size; y++)
+            {
+                int runX = 1, runY = 1;
+                for (int x = 0; x < size; x++)
+                {
+                    if (mod[y, x]) dark++;
+                    if (x > 0)
+                    {
+                        if (mod[y, x] == mod[y, x - 1]) { runX++; if (runX == 5) score += 3; else if (runX > 5) score++; } else runX = 1;
+                        if (mod[x, y] == mod[x - 1, y]) { runY++; if (runY == 5) score += 3; else if (runY > 5) score++; } else runY = 1;
+                    }
+                    if (x > 0 && y > 0 && mod[y, x] == mod[y, x - 1] && mod[y, x] == mod[y - 1, x] && mod[y, x] == mod[y - 1, x - 1]) score += 3;
+                }
+            }
+            int total = size * size;
+            int k = (Math.Abs(dark * 20 - total * 10) + total - 1) / total - 1;
+            score += Math.Max(0, k) * 10;
+            return score;
+        }
+
+        static byte Mul(int x, int y)
+        {
+            int z = 0;
+            for (int i = 7; i >= 0; i--)
+            {
+                z = (z << 1) ^ ((z >> 7) * 0x11D);
+                z ^= ((y >> i) & 1) * x;
+            }
+            return (byte)z;
+        }
+
+        static byte[] RsDivisor(int degree)
+        {
+            byte[] r = new byte[degree];
+            r[degree - 1] = 1;
+            int root = 1;
+            for (int i = 0; i < degree; i++)
+            {
+                for (int j = 0; j < r.Length; j++)
+                {
+                    r[j] = Mul(r[j], root);
+                    if (j + 1 < r.Length) r[j] ^= r[j + 1];
+                }
+                root = Mul(root, 0x02);
+            }
+            return r;
+        }
+
+        static byte[] RsRemainder(byte[] data, byte[] div)
+        {
+            byte[] r = new byte[div.Length];
+            foreach (byte b in data)
+            {
+                int factor = b ^ r[0];
+                Array.Copy(r, 1, r, 0, r.Length - 1);
+                r[r.Length - 1] = 0;
+                for (int i = 0; i < r.Length; i++) r[i] ^= Mul(div[i], factor);
+            }
+            return r;
+        }
+
+        // 画成图片:每个格子 cell 像素,四周留 4 格白边
+        public static Bitmap Render(bool[,] mod, int cell, Color dark, Color light)
+        {
+            int n = mod.GetLength(0), q = 4;
+            Bitmap b = new Bitmap((n + q * 2) * cell, (n + q * 2) * cell, PixelFormat.Format24bppRgb);
+            using (Graphics g = Graphics.FromImage(b))
+            {
+                g.Clear(light);
+                using (SolidBrush br = new SolidBrush(dark))
+                    for (int y = 0; y < n; y++)
+                        for (int x = 0; x < n; x++)
+                            if (mod[y, x]) g.FillRectangle(br, (x + q) * cell, (y + q) * cell, cell, cell);
+            }
+            return b;
+        }
+    }
+
+    // ================================================================ 局域网临时分享(图片、文件、长文字)
+    // 只服务当前这一条内容:地址里带随机口令,窗口关掉或 10 分钟后自动停止
+    static class ShareServer
+    {
+        class Entry { public string Name, Path, Mime; public byte[] Bytes; public long Size; }
+
+        static System.Net.Sockets.TcpListener listener;
+        static string token;
+        static string pageTitle, pageText;
+        static List<Entry> entries = new List<Entry>();
+        static DateTime expires;
+        static readonly object gate = new object();
+
+        public static bool Running { get { return listener != null; } }
+
+        // 找本机在局域网里的地址(优先有网关的 Wi-Fi / 有线网卡)
+        public static string LanAddress()
+        {
+            string best = null;
+            int bestScore = -1;
+            try
+            {
+                foreach (System.Net.NetworkInformation.NetworkInterface ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback ||
+                        ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Tunnel) continue;
+                    string desc = (ni.Description + " " + ni.Name).ToLowerInvariant();
+                    // 虚拟网卡(虚拟机、VPN 等)扣分但不排除:装了 Hyper-V 的电脑,真正的网卡也可能叫 vEthernet
+                    bool virt = desc.Contains("virtual") || desc.Contains("vmware") || desc.Contains("vbox") || desc.Contains("wsl") ||
+                                desc.Contains("tap-") || desc.Contains("vpn") || desc.Contains("zerotier") || desc.Contains("tailscale") ||
+                                desc.Contains("default switch");
+                    System.Net.NetworkInformation.IPInterfaceProperties p = ni.GetIPProperties();
+                    bool gw = p.GatewayAddresses.Any(g => g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any));
+                    foreach (System.Net.NetworkInformation.UnicastIPAddressInformation ua in p.UnicastAddresses)
+                    {
+                        if (ua.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                        byte[] a = ua.Address.GetAddressBytes();
+                        bool priv = a[0] == 10 || (a[0] == 172 && a[1] >= 16 && a[1] <= 31) || (a[0] == 192 && a[1] == 168);
+                        if (!priv) continue;
+                        int score = (gw ? 8 : 0) - (virt ? 6 : 0) + (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211 ? 2 : 0) + (a[0] == 192 ? 1 : 0);
+                        if (score > bestScore) { bestScore = score; best = ua.Address.ToString(); }
+                    }
+                }
+            }
+            catch { }
+            return best;
+        }
+
+        static string Mime(string name)
+        {
+            switch ((System.IO.Path.GetExtension(name) ?? "").ToLowerInvariant())
+            {
+                case ".png": return "image/png";
+                case ".jpg": case ".jpeg": return "image/jpeg";
+                case ".gif": return "image/gif";
+                case ".bmp": return "image/bmp";
+                case ".webp": return "image/webp";
+                case ".pdf": return "application/pdf";
+                case ".txt": return "text/plain; charset=utf-8";
+                case ".mp4": return "video/mp4";
+                case ".mp3": return "audio/mpeg";
+                default: return "application/octet-stream";
+            }
+        }
+
+        // 开始分享。text 不为空时分享一段文字;否则分享文件。返回手机要打开的地址,失败返回 null
+        public static string Start(string title, string text, IList<string> files, out string error)
+        {
+            error = null;
+            Stop();
+            string ip = LanAddress();
+            if (ip == null) { error = "这台电脑没有连接局域网(Wi-Fi 或网线)"; return null; }
+            lock (gate)
+            {
+                entries = new List<Entry>();
+                pageTitle = title;
+                pageText = text;
+                if (files != null)
+                    foreach (string f in files)
+                    {
+                        try
+                        {
+                            FileInfo fi = new FileInfo(f);
+                            if (!fi.Exists) continue;
+                            Entry e = new Entry();
+                            e.Path = fi.FullName;
+                            e.Name = fi.Name;
+                            e.Size = fi.Length;
+                            e.Mime = Mime(fi.Name);
+                            entries.Add(e);
+                        }
+                        catch { }
+                    }
+                if (text == null && entries.Count == 0) { error = "没有可以分享的内容(文件可能已被移动或删除)"; return null; }
+                byte[] rnd = new byte[12];
+                using (RandomNumberGenerator g = RandomNumberGenerator.Create()) g.GetBytes(rnd);
+                token = BitConverter.ToString(rnd).Replace("-", "").ToLowerInvariant();
+                expires = DateTime.Now.AddMinutes(10);
+            }
+            try
+            {
+                listener = new System.Net.Sockets.TcpListener(IPAddress.Any, 0);
+                listener.Start();
+            }
+            catch (Exception ex)
+            {
+                listener = null;
+                error = "无法开启分享:" + ex.Message;
+                return null;
+            }
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            System.Net.Sockets.TcpListener l = listener;
+            Thread th = new Thread(delegate() { AcceptLoop(l); });
+            th.IsBackground = true;
+            th.Start();
+            return "http://" + ip + ":" + port + "/" + token;
+        }
+
+        public static void Stop()
+        {
+            System.Net.Sockets.TcpListener l = listener;
+            listener = null;
+            if (l != null) { try { l.Stop(); } catch { } }
+        }
+
+        static void AcceptLoop(System.Net.Sockets.TcpListener l)
+        {
+            while (true)
+            {
+                System.Net.Sockets.TcpClient c;
+                try { c = l.AcceptTcpClient(); }
+                catch { return; }   // 已停止
+                ThreadPool.QueueUserWorkItem(delegate { try { Serve(c); } catch { } finally { try { c.Close(); } catch { } } });
+            }
+        }
+
+        static void Serve(System.Net.Sockets.TcpClient c)
+        {
+            c.ReceiveTimeout = 10000;
+            c.SendTimeout = 60000;
+            System.Net.Sockets.NetworkStream ns = c.GetStream();
+            // 读请求头
+            byte[] buf = new byte[8192];
+            int got = 0;
+            while (got < buf.Length)
+            {
+                int n = ns.Read(buf, got, buf.Length - got);
+                if (n <= 0) break;
+                got += n;
+                if (Encoding.ASCII.GetString(buf, 0, got).Contains("\r\n\r\n")) break;
+            }
+            string head = Encoding.ASCII.GetString(buf, 0, got);
+            int sp1 = head.IndexOf(' '), sp2 = sp1 < 0 ? -1 : head.IndexOf(' ', sp1 + 1);
+            if (sp1 < 0 || sp2 < 0) return;
+            string method = head.Substring(0, sp1);
+            string path = head.Substring(sp1 + 1, sp2 - sp1 - 1);
+            int q = path.IndexOf('?');
+            if (q >= 0) path = path.Substring(0, q);
+            bool headOnly = method == "HEAD";
+
+            string tok;
+            List<Entry> list;
+            string title, text;
+            DateTime exp;
+            lock (gate) { tok = token; list = entries; title = pageTitle; text = pageText; exp = expires; }
+            if (tok == null || !(path == "/" + tok || path.StartsWith("/" + tok + "/")))
+            {
+                Send(ns, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Not found"), null, headOnly);
+                return;
+            }
+            if (DateTime.Now > exp)
+            {
+                Send(ns, 410, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page("已失效", "<p class='sub'>这个分享已经过期。请在电脑上重新打开二维码。</p>")), null, headOnly);
+                return;
+            }
+            string rest = path.Substring(tok.Length + 1).TrimStart('/');
+            if (rest.Length == 0)
+            {
+                Send(ns, 200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(BuildPage(tok, title, text, list)), null, headOnly);
+                return;
+            }
+            int idx;
+            if (rest.StartsWith("f") && int.TryParse(rest.Substring(1), out idx) && idx >= 0 && idx < list.Count)
+            {
+                Entry e = list[idx];
+                string disp = "inline; filename*=UTF-8''" + Uri.EscapeDataString(e.Name);
+                using (FileStream fs = new FileStream(e.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    string hdr = "HTTP/1.1 200 OK\r\nContent-Type: " + e.Mime + "\r\nContent-Length: " + fs.Length +
+                                 "\r\nContent-Disposition: " + disp + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+                    byte[] hb = Encoding.UTF8.GetBytes(hdr);
+                    ns.Write(hb, 0, hb.Length);
+                    if (!headOnly) fs.CopyTo(ns, 81920);
+                }
+                return;
+            }
+            Send(ns, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Not found"), null, headOnly);
+        }
+
+        static void Send(System.Net.Sockets.NetworkStream ns, int code, string type, byte[] body, string extra, bool headOnly)
+        {
+            string reason = code == 200 ? "OK" : code == 404 ? "Not Found" : "Gone";
+            string hdr = "HTTP/1.1 " + code + " " + reason + "\r\nContent-Type: " + type + "\r\nContent-Length: " + body.Length +
+                         "\r\nCache-Control: no-store\r\nConnection: close\r\n" + (extra ?? "") + "\r\n";
+            byte[] hb = Encoding.UTF8.GetBytes(hdr);
+            ns.Write(hb, 0, hb.Length);
+            if (!headOnly) ns.Write(body, 0, body.Length);
+        }
+
+        static string Esc(string s)
+        {
+            return (s ?? "").Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+        }
+
+        static string Size(long b)
+        {
+            if (b < 1024) return b + " B";
+            if (b < 1048576) return (b / 1024.0).ToString("0.#", CultureInfo.InvariantCulture) + " KB";
+            return (b / 1048576.0).ToString("0.#", CultureInfo.InvariantCulture) + " MB";
+        }
+
+        static string Page(string h1, string inner)
+        {
+            return "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>" +
+                   "<title>" + Esc(h1) + " · Glean 拾光</title><style>" +
+                   ":root{--bg:#f5f2ed;--card:#fff;--text:#26211c;--sub:#887d70;--accent:#e28a2e}" +
+                   "@media (prefers-color-scheme:dark){:root{--bg:#1e1c1a;--card:#2e2b28;--text:#f1ece5;--sub:#a2998e}}" +
+                   "body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}" +
+                   ".wrap{max-width:720px;margin:0 auto;padding:20px 16px 40px}" +
+                   ".brand{color:var(--sub);font-size:13px;margin-bottom:6px}h1{font-size:20px;margin:0 0 14px}" +
+                   ".card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}" +
+                   "img{max-width:100%;border-radius:10px;display:block}.sub{color:var(--sub);font-size:13px}" +
+                   "pre{white-space:pre-wrap;word-break:break-word;margin:0;font:inherit;user-select:text;-webkit-user-select:text}" +
+                   ".btn{display:inline-block;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:15px;text-decoration:none;margin-top:10px}" +
+                   ".row{display:flex;justify-content:space-between;align-items:center;gap:10px}.name{word-break:break-all}" +
+                   "</style></head><body><div class='wrap'><div class='brand'>Glean 拾光 · 从电脑带走</div><h1>" + Esc(h1) + "</h1>" + inner + "</div></body></html>";
+        }
+
+        static string BuildPage(string tok, string title, string text, List<Entry> list)
+        {
+            StringBuilder sb = new StringBuilder();
+            if (text != null)
+            {
+                sb.Append("<div class='card'><pre id='t'>" + Esc(text) + "</pre></div>");
+                sb.Append("<button class='btn' onclick=\"var r=document.createRange();r.selectNodeContents(document.getElementById('t'));var s=getSelection();s.removeAllRanges();s.addRange(r);" +
+                          "try{if(navigator.clipboard){navigator.clipboard.writeText(document.getElementById('t').innerText).then(function(){this.innerText='已复制'}.bind(this))}else{document.execCommand('copy');this.innerText='已复制'}}catch(e){this.innerText='已全选,长按复制'}\">复制全部文字</button>");
+            }
+            for (int i = 0; i < list.Count; i++)
+            {
+                Entry e = list[i];
+                string url = "/" + tok + "/f" + i;
+                sb.Append("<div class='card'>");
+                if (e.Mime.StartsWith("image/")) sb.Append("<img src='" + url + "' alt=''><p class='sub'>长按图片即可保存到相册</p>");
+                sb.Append("<div class='row'><div><div class='name'>" + Esc(e.Name) + "</div><div class='sub'>" + Size(e.Size) + "</div></div>" +
+                          "<a class='btn' href='" + url + "' download='" + Esc(e.Name) + "'>下载</a></div></div>");
+            }
+            sb.Append("<p class='sub'>这个页面由你电脑上的 Glean 临时提供,只在同一个 Wi-Fi 里能打开,10 分钟后自动失效。</p>");
+            return Page(title, sb.ToString());
+        }
+    }
+
+    // 扫码窗口
+    class ShareForm : Form
+    {
+        Bitmap qr;
+        readonly string title, mode, link;
+        readonly System.Windows.Forms.Timer expire = new System.Windows.Forms.Timer();
+        readonly bool served;
+
+        public ShareForm(string title, bool[,] matrix, string mode, string link, bool served)
+        {
+            this.title = title;
+            this.mode = mode;
+            this.link = link;
+            this.served = served;
+            Text = "扫码带走";
+            try { if (Brand.LargeIcon != null) Icon = Brand.LargeIcon; } catch { }
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            ShowInTaskbar = true;
+            KeyPreview = true;
+            DoubleBuffered = true;
+            Font = Gfx.UI;
+            BackColor = SetPal.Back;
+            int n = matrix.GetLength(0) + 8;
+            int cell = Math.Max(2, Gfx.S(300) / n);
+            qr = QrCode.Render(matrix, cell, Color.FromArgb(28, 26, 24), Color.White);
+            int w = Math.Max(qr.Width + Gfx.S(80), Gfx.S(400));
+            ClientSize = new Size(w, Gfx.S(72) + qr.Width + Gfx.S(150));
+            Btn ok = new Btn();
+            ok.Text = "完成";
+            ok.Primary = true;
+            ok.SetBounds(ClientSize.Width - Gfx.S(28 + 96), ClientSize.Height - Gfx.S(52), Gfx.S(96), Gfx.S(34));
+            ok.Click += delegate { Close(); };
+            Controls.Add(ok);
+            if (served)
+            {
+                expire.Interval = 10 * 60 * 1000;
+                expire.Tick += delegate { expire.Stop(); Close(); };
+                expire.Start();
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.DarkTitle(Handle, Theme.Cur.Dark);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Enter) Close();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            expire.Stop();
+            if (served) ShareServer.Stop();
+            if (qr != null) { qr.Dispose(); qr = null; }
+            base.OnFormClosed(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Theme t = Theme.Cur;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Gfx.Text(g, "用手机扫一扫", SetPal.PageTitle, new Rectangle(Gfx.S(28), Gfx.S(18), ClientSize.Width - Gfx.S(56), Gfx.S(36)), t.Text, TextFormatFlags.Left);
+            Gfx.Text(g, title, Gfx.Small, new Rectangle(Gfx.S(28), Gfx.S(50), ClientSize.Width - Gfx.S(56), Gfx.S(20)), t.Sub,
+                TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            if (qr != null)
+            {
+                int x = (ClientSize.Width - qr.Width) / 2, y = Gfx.S(80);
+                Gfx.FillRound(g, Color.White, new Rectangle(x - Gfx.S(6), y - Gfx.S(6), qr.Width + Gfx.S(12), qr.Height + Gfx.S(12)), 14);
+                g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                g.DrawImageUnscaled(qr, x, y);
+                Rectangle tr = new Rectangle(Gfx.S(28), y + qr.Height + Gfx.S(14), ClientSize.Width - Gfx.S(56), Gfx.S(44));
+                TextRenderer.DrawText(g, mode, Gfx.Small, tr, t.Sub, TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+                if (link != null)
+                    TextRenderer.DrawText(g, link, Gfx.Small, new Rectangle(Gfx.S(28), tr.Bottom, ClientSize.Width - Gfx.S(56), Gfx.S(20)), Theme.Blend(t.Sub, t.Bg, 0.3),
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+        }
+    }
+
+    // ================================================================ 快递单号
+    static class Courier
+    {
+        // 只认带固定字母前缀的单号,纯数字的单号各家快递会撞号,不乱猜
+        static readonly KeyValuePair<Regex, string[]>[] Rules = new KeyValuePair<Regex, string[]>[]
+        {
+            Rule(@"^SF\d{12,15}$", "顺丰速运", "shunfeng"),
+            Rule(@"^YT\d{13,15}$", "圆通速递", "yuantong"),
+            Rule(@"^JT\d{13,15}$", "极兔速递", "jtexpress"),
+            Rule(@"^JD[A-Z0-9]{11,18}$", "京东物流", "jd"),
+            Rule(@"^DPK\d{9,15}$", "德邦快递", "debangkuaidi"),
+            Rule(@"^[A-Z]{2}\d{9}CN$", "中国邮政 EMS", "ems"),
+        };
+
+        static KeyValuePair<Regex, string[]> Rule(string re, string name, string code)
+        {
+            return new KeyValuePair<Regex, string[]>(new Regex(re, RegexOptions.Compiled), new string[] { name, code });
+        }
+
+        // 返回 [快递公司名, 快递100 的公司代码],不是单号返回 null
+        public static string[] Detect(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length > 40) return null;
+            string t = Regex.Replace(text.Trim(), @"\s", "").ToUpperInvariant();
+            foreach (KeyValuePair<Regex, string[]> r in Rules)
+                if (r.Key.IsMatch(t)) return r.Value;
+            return null;
+        }
+
+        public static string Number(string text)
+        {
+            return Regex.Replace((text ?? "").Trim(), @"\s", "").ToUpperInvariant();
+        }
+
+        public static string TrackUrl(string text)
+        {
+            string[] c = Detect(text);
+            string nu = Uri.EscapeDataString(Number(text));
+            return c != null ? "https://www.kuaidi100.com/chaxun?com=" + c[1] + "&nu=" + nu : "https://www.kuaidi100.com/chaxun?nu=" + nu;
+        }
+
+        public static string SearchUrl(string text)
+        {
+            return "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(Number(text));
+        }
     }
 
     // ================================================================ 图片转文字

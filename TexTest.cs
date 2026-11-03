@@ -18,6 +18,7 @@ static class TexTest
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         try
         {
+            Directory.CreateDirectory("qr");
             Glean.Native.SetProcessDPIAware();
             Glean.Gfx.InitDpi();
             Glean.Theme.Refresh();

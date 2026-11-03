@@ -6,14 +6,11 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - name: kuaidi100 autonumber
-        shell: pwsh
+      - uses: actions/checkout@v4
+      - name: build and run
+        shell: cmd
         run: |
-          foreach ($n in @("YT7652500323998", "SF1234567890123", "773123456789012", "78123456789012", "4312345678901", "9876543210987", "1234567890123")) {
-            $r = curl.exe -s -A "Mozilla/5.0" "https://www.kuaidi100.com/autonumber/autoComNum?resultv2=1&text=$n"
-            Write-Output "AUTO $n => $r"
-          }
-          $r2 = curl.exe -s -o NUL -w "%{http_code} %{redirect_url}" -A "Mozilla/5.0" "https://www.kuaidi100.com/chaxun?com=yuantong&nu=YT7652500323998"
-          Write-Output "PAGE chaxun => $r2"
-          $r3 = curl.exe -s -o NUL -w "%{http_code} %{redirect_url}" -A "Mozilla/5.0" "https://m.kuaidi100.com/result.jsp?nu=YT7652500323998"
-          Write-Output "PAGE m.result => $r3"
+          set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          "%CSC%" /nologo /target:winexe /optimize /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:tex.exe Glean.cs TexTest.cs /main:TexTest || exit /b 1
+          start /wait tex.exe
+          type out.txt

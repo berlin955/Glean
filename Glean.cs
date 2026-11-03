@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.17.0.0")]
-[assembly: AssemblyFileVersion("0.17.0.0")]
+[assembly: AssemblyVersion("0.18.0.0")]
+[assembly: AssemblyFileVersion("0.18.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.17";
+        public const string Version = "0.18";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -3048,6 +3048,8 @@ namespace Glean
             {
                 string gs = kind == Item.KUrl ? "↗" : kind == Item.KEmail ? "@" :
                             kind == Item.KPath ? "/" : kind == Item.KNumber ? "#" : kind == Item.KTrack ? "单" : "Aa";
+                Courier.Company lc = Courier.For(it);
+                if (lc != null) gs = lc.Mark;
                 Gfx.Text(g, gs, Gfx.Bold, gl, hc, TextFormatFlags.HorizontalCenter);
             }
 
@@ -5120,9 +5122,10 @@ namespace Glean
                 Theme.Blend(hc, Color.White, 0.10), Theme.Blend(hc, Color.Black, 0.10), LinearGradientMode.Vertical))
                 g.FillRectangle(lb, hr);
 
-            Bitmap appIcon = AppIcons.Get(it.AppPath);
+            Courier.Company courier = Courier.For(it);
+            Bitmap appIcon = courier != null ? null : AppIcons.Get(it.AppPath);
             int iconSz = Math.Min(Gfx.S(30), hh - Gfx.S(14));
-            int textRight = hr.Right - Gfx.S(16) - (appIcon != null ? iconSz + Gfx.S(10) : 0);
+            int textRight = hr.Right - Gfx.S(16) - (appIcon != null || courier != null ? iconSz + Gfx.S(10) : 0);
             // 色带:标题 + 小字"多久之前 · 大小"
             string sizeTxt = it.SizeText();
             string subt = it.TimeAgo() + (sizeTxt != null ? "  ·  " + sizeTxt : "");
@@ -5144,7 +5147,9 @@ namespace Glean
                 Gfx.SoftText(g, CardLook.Title(it), Gfx.HeaderFont, new Rectangle(tx0, blockY, tw0, Gfx.S(22)), ink, false);
                 Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk, false);
             }
-            if (appIcon != null)
+            if (courier != null)
+                Courier.DrawBadge(g, courier, new Rectangle(hr.Right - Gfx.S(16) - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz));
+            else if (appIcon != null)
             {
                 Rectangle ir = new Rectangle(hr.Right - Gfx.S(16) - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz);
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;
@@ -7979,6 +7984,13 @@ namespace Glean
             }, null);
         }
 
+        void MarkCourier(Item it, Courier.Company c)
+        {
+            hist.SetTitle(it, c == null ? null : c.Name);
+            Reload(0);
+            Reselect(it, strip.Selected);
+        }
+
         // ---------------- 扫码带走
         static ShareForm shareWin;
 
@@ -8257,10 +8269,31 @@ namespace Glean
                     AddTransform(sub, "清理链接追踪参数", it, delegate(string s) { return Util.CleanUrl(s); });
                 m.Items.Add(sub);
                 if (it.Kind == Item.KUrl) m.Items.Add("在浏览器中打开", null, delegate { OpenLink(it); });
-                if (it.Kind == Item.KTrack)
+                Courier.Company cc0 = Courier.For(it);
+                if (cc0 != null || Courier.LooksLikeNumber(it.Text))
                 {
-                    m.Items.Add("查物流(快递100)", null, delegate { OpenUrl(Courier.TrackUrl(it.Text)); });
+                    ToolStripMenuItem trk = new ToolStripMenuItem(cc0 != null ? "查物流(" + cc0.Name + ")" : "当作快递单号查询");
+                    trk.Click += delegate { OpenUrl(Courier.TrackUrl(it.Text, cc0)); };
+                    m.Items.Add(trk);
                     m.Items.Add("用百度查物流", null, delegate { OpenUrl(Courier.SearchUrl(it.Text)); });
+                    if (Courier.DetectCompany(it.Text) == null)
+                    {
+                        // 纯数字单号认不出是哪家:让用户标记一下,卡片上就会显示公司名和角标
+                        ToolStripMenuItem mark = new ToolStripMenuItem("标记为快递单号");
+                        foreach (Courier.Company co in Courier.Companies)
+                        {
+                            Courier.Company pick = co;
+                            ToolStripMenuItem mi = new ToolStripMenuItem(co.Name, null, delegate { MarkCourier(it, pick); });
+                            mi.Checked = cc0 == co;
+                            mark.DropDownItems.Add(mi);
+                        }
+                        if (cc0 != null)
+                        {
+                            mark.DropDownItems.Add(new ToolStripSeparator());
+                            mark.DropDownItems.Add("取消标记", null, delegate { MarkCourier(it, null); });
+                        }
+                        m.Items.Add(mark);
+                    }
                 }
             }
             else if (it.IsFiles)
@@ -9940,47 +9973,114 @@ namespace Glean
     // ================================================================ 快递单号
     static class Courier
     {
-        // 只认带固定字母前缀的单号,纯数字的单号各家快递会撞号,不乱猜
-        static readonly KeyValuePair<Regex, string[]>[] Rules = new KeyValuePair<Regex, string[]>[]
+        public class Company
         {
-            Rule(@"^SF\d{12,15}$", "顺丰速运", "shunfeng"),
-            Rule(@"^YT\d{13,15}$", "圆通速递", "yuantong"),
-            Rule(@"^JT\d{13,15}$", "极兔速递", "jtexpress"),
-            Rule(@"^JD[A-Z0-9]{11,18}$", "京东物流", "jd"),
-            Rule(@"^DPK\d{9,15}$", "德邦快递", "debangkuaidi"),
-            Rule(@"^[A-Z]{2}\d{9}CN$", "中国邮政 EMS", "ems"),
+            public string Name, Mark, Code;
+            public Color Color;
+            public Company(string name, string mark, string code, Color c) { Name = name; Mark = mark; Code = code; Color = c; }
+        }
+
+        // 角标用公司名里的一个字 + 一种颜色(不是各家的商标图案)
+        public static readonly Company[] Companies = new Company[]
+        {
+            new Company("顺丰速运", "顺", "shunfeng", Color.FromArgb(40, 40, 44)),
+            new Company("中通快递", "中", "zhongtong", Color.FromArgb(32, 96, 200)),
+            new Company("圆通速递", "圆", "yuantong", Color.FromArgb(112, 58, 160)),
+            new Company("韵达快递", "韵", "yunda", Color.FromArgb(214, 140, 20)),
+            new Company("申通快递", "申", "shentong", Color.FromArgb(222, 92, 40)),
+            new Company("极兔速递", "兔", "jtexpress", Color.FromArgb(214, 40, 52)),
+            new Company("京东物流", "京", "jd", Color.FromArgb(196, 30, 36)),
+            new Company("邮政快递包裹", "邮", "youzhengguonei", Color.FromArgb(0, 128, 72)),
+            new Company("EMS", "E", "ems", Color.FromArgb(0, 104, 170)),
+            new Company("德邦快递", "德", "debangkuaidi", Color.FromArgb(20, 84, 170)),
+            new Company("百世快递", "百", "huitongkuaidi", Color.FromArgb(200, 44, 66)),
+            new Company("跨越速运", "跨", "kuayue", Color.FromArgb(120, 64, 168)),
+            new Company("顺心捷达", "心", "sxjdfreight", Color.FromArgb(230, 100, 30)),
+            new Company("菜鸟速递", "鸟", "danniao", Color.FromArgb(60, 120, 230)),
         };
 
-        static KeyValuePair<Regex, string[]> Rule(string re, string name, string code)
+        static Company Find(string code)
         {
-            return new KeyValuePair<Regex, string[]>(new Regex(re, RegexOptions.Compiled), new string[] { name, code });
-        }
-
-        // 返回 [快递公司名, 快递100 的公司代码],不是单号返回 null
-        public static string[] Detect(string text)
-        {
-            if (string.IsNullOrEmpty(text) || text.Length > 40) return null;
-            string t = Regex.Replace(text.Trim(), @"\s", "").ToUpperInvariant();
-            foreach (KeyValuePair<Regex, string[]> r in Rules)
-                if (r.Key.IsMatch(t)) return r.Value;
+            foreach (Company c in Companies) if (c.Code == code) return c;
             return null;
         }
+
+        // 只认带固定字母前缀的单号;纯数字的单号各家会撞号,自动识别会认错,交给用户标记或查询网站识别
+        static readonly KeyValuePair<Regex, string>[] Rules = new KeyValuePair<Regex, string>[]
+        {
+            new KeyValuePair<Regex, string>(new Regex(@"^SF\d{12,15}$"), "shunfeng"),
+            new KeyValuePair<Regex, string>(new Regex(@"^YT\d{13,15}$"), "yuantong"),
+            new KeyValuePair<Regex, string>(new Regex(@"^JT\d{13,15}$"), "jtexpress"),
+            new KeyValuePair<Regex, string>(new Regex(@"^JD[A-Z0-9]{11,18}$"), "jd"),
+            new KeyValuePair<Regex, string>(new Regex(@"^DPK\d{9,15}$"), "debangkuaidi"),
+            new KeyValuePair<Regex, string>(new Regex(@"^E[A-Z]\d{9}C[NS]$"), "ems"),
+            new KeyValuePair<Regex, string>(new Regex(@"^[A-Z]{2}\d{9}CN$"), "ems"),
+        };
 
         public static string Number(string text)
         {
             return Regex.Replace((text ?? "").Trim(), @"\s", "").ToUpperInvariant();
         }
 
+        // 自动识别:返回 [公司名, 快递100 代码],不是单号返回 null(保留给旧代码用)
+        public static string[] Detect(string text)
+        {
+            Company c = DetectCompany(text);
+            return c == null ? null : new string[] { c.Name, c.Code };
+        }
+
+        public static Company DetectCompany(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length > 40) return null;
+            string t = Number(text);
+            foreach (KeyValuePair<Regex, string> r in Rules)
+                if (r.Key.IsMatch(t)) return Find(r.Value);
+            return null;
+        }
+
+        // 看起来可能是快递单号(字母数字、10~22 位、含至少 8 位数字),用来决定要不要在菜单里提供"当作快递单号"
+        public static bool LooksLikeNumber(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length > 40) return false;
+            string t = Number(text);
+            return Regex.IsMatch(t, @"^[A-Z0-9]{10,22}$") && Regex.Matches(t, @"\d").Count >= 8;
+        }
+
+        // 一条记录对应哪家快递:自动识别的 > 用户自己标记的(标记就是把卡片标题改成公司名)
+        public static Company For(Item it)
+        {
+            if (it == null || it.IsImage || it.IsFiles) return null;
+            Company c = DetectCompany(it.Text);
+            if (c != null) return c;
+            if (!string.IsNullOrEmpty(it.CustomTitle) && LooksLikeNumber(it.Text))
+                foreach (Company k in Companies) if (k.Name == it.CustomTitle) return k;
+            return null;
+        }
+
         public static string TrackUrl(string text)
         {
-            string[] c = Detect(text);
+            Company c = DetectCompany(text);
+            return TrackUrl(text, c);
+        }
+
+        public static string TrackUrl(string text, Company c)
+        {
             string nu = Uri.EscapeDataString(Number(text));
-            return c != null ? "https://www.kuaidi100.com/chaxun?com=" + c[1] + "&nu=" + nu : "https://www.kuaidi100.com/chaxun?nu=" + nu;
+            return c != null ? "https://www.kuaidi100.com/chaxun?com=" + c.Code + "&nu=" + nu : "https://www.kuaidi100.com/chaxun?nu=" + nu;
         }
 
         public static string SearchUrl(string text)
         {
             return "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(Number(text));
+        }
+
+        // 角标:白色圆角方块 + 公司名的一个字
+        public static void DrawBadge(Graphics g, Company c, Rectangle r)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Gfx.FillRound(g, Color.White, r, 7);
+            using (Font f = new Font("Microsoft YaHei UI", Math.Max(6f, r.Height * 0.48f), FontStyle.Bold, GraphicsUnit.Pixel))
+                Gfx.SoftText(g, c.Mark, f, new Rectangle(r.X, r.Y + 1, r.Width, r.Height), c.Color, true);
         }
     }
 

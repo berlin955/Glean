@@ -14,6 +14,11 @@ jobs:
           "%CSC%" /nologo /target:winexe /optimize /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:tex.exe Glean.cs TexTest.cs /main:TexTest || exit /b 1
           start /wait tex.exe
           type out.txt
+      - name: decode QR
+        shell: pwsh
+        run: |
+          python -m pip install -q opencv-python-headless
+          python decode.py
       - uses: actions/upload-artifact@v4
         with:
           name: qr

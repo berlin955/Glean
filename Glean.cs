@@ -9543,8 +9543,10 @@ namespace Glean
                     if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback ||
                         ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Tunnel) continue;
                     string desc = (ni.Description + " " + ni.Name).ToLowerInvariant();
-                    if (desc.Contains("virtual") || desc.Contains("vmware") || desc.Contains("hyper-v") || desc.Contains("vbox") ||
-                        desc.Contains("wsl") || desc.Contains("tap") || desc.Contains("vpn") || desc.Contains("zerotier") || desc.Contains("tailscale")) continue;
+                    // 虚拟网卡(虚拟机、VPN 等)扣分但不排除:装了 Hyper-V 的电脑,真正的网卡也可能叫 vEthernet
+                    bool virt = desc.Contains("virtual") || desc.Contains("vmware") || desc.Contains("vbox") || desc.Contains("wsl") ||
+                                desc.Contains("tap-") || desc.Contains("vpn") || desc.Contains("zerotier") || desc.Contains("tailscale") ||
+                                desc.Contains("default switch");
                     System.Net.NetworkInformation.IPInterfaceProperties p = ni.GetIPProperties();
                     bool gw = p.GatewayAddresses.Any(g => g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any));
                     foreach (System.Net.NetworkInformation.UnicastIPAddressInformation ua in p.UnicastAddresses)
@@ -9553,7 +9555,7 @@ namespace Glean
                         byte[] a = ua.Address.GetAddressBytes();
                         bool priv = a[0] == 10 || (a[0] == 172 && a[1] >= 16 && a[1] <= 31) || (a[0] == 192 && a[1] == 168);
                         if (!priv) continue;
-                        int score = (gw ? 4 : 0) + (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211 ? 2 : 0) + (a[0] == 192 ? 1 : 0);
+                        int score = (gw ? 8 : 0) - (virt ? 6 : 0) + (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211 ? 2 : 0) + (a[0] == 192 ? 1 : 0);
                         if (score > bestScore) { bestScore = score; best = ua.Address.ToString(); }
                     }
                 }

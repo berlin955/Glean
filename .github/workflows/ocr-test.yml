@@ -20,7 +20,7 @@ jobs:
           python -m pip install -q opencv-python-headless segno pyzbar pillow
           python decode.py
 
-          python decode2.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: qr

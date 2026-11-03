@@ -8000,7 +8000,7 @@ namespace Glean
             HideNow();
             if (shareWin != null && !shareWin.IsDisposed) shareWin.Close();
             bool[,] m;
-            if (text != null && Encoding.UTF8.GetByteCount(text) <= 900)
+            if (text != null && Encoding.UTF8.GetByteCount(text) <= 700)
             {
                 m = QrCode.Encode(Encoding.UTF8.GetBytes(text));
                 if (m != null)

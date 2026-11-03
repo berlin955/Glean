@@ -8296,10 +8296,40 @@ namespace Glean
         }
 
         // 提前创建窗口和所有子控件(只是建好,不显示)
+        // 启动后在后台把第一次打开要用到的代码都先跑一遍(毛玻璃、卡片绘制、列表、搜索),
+        // 这样第一次按快捷键和之后一样快
         public void Prewarm()
         {
             CreateHandles(this);
             IntPtr q = quick.Handle;
+            if (Visible) return;
+            try
+            {
+                Bitmap bl = Frost.CaptureBlur(new Rectangle(0, 0, 96, 48));
+                if (bl != null)
+                {
+                    Frost.Legible(bl, 35);
+                    using (Graphics g = Graphics.FromImage(bl)) Frost.Tint(g, new Rectangle(0, 0, 96, 48), 35, 0, 1f);
+                    bl.Dispose();
+                }
+                bool oldSuppress = suppress;
+                suppress = false;
+                IClipView keep = strip;
+                foreach (IClipView v in new IClipView[] { cardView, listView })
+                {
+                    strip = v;
+                    Reload(2);
+                    Control c = (Control)v;
+                    if (c.Width < 10 || c.Height < 10) c.Size = new Size(Gfx.S(480), Gfx.S(480));   // 还没排过版的视图先给个大小
+                    if (c.Width > 0 && c.Height > 0)
+                        using (Bitmap off = new Bitmap(c.Width, Math.Min(c.Height, Gfx.S(400))))
+                            c.DrawToBitmap(off, new Rectangle(0, 0, off.Width, off.Height));
+                }
+                strip = keep;
+                suppress = oldSuppress;
+                Match(hist.Items.Count > 0 ? hist.Items[0] : new Item(), "warm");
+            }
+            catch { }
         }
 
         static void CreateHandles(Control c)

@@ -1,0 +1,16 @@
+name: ocr-test
+on:
+  push:
+    branches: [ocr-test]
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build and run
+        shell: cmd
+        run: |
+          set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          "%CSC%" /nologo /target:exe /codepage:65001 /main:OcrTestNs.TestMain /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:t.exe Glean.cs OcrTest.cs || exit /b 1
+          chcp 65001
+          t.exe

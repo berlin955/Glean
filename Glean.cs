@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.5.0.0")]
-[assembly: AssemblyFileVersion("0.5.0.0")]
+[assembly: AssemblyVersion("0.6.0.0")]
+[assembly: AssemblyFileVersion("0.6.0.0")]
 
 namespace Glean
 {
@@ -42,6 +42,8 @@ namespace Glean
         public static long LastUpdateCheck = 0;        // 上次检查的时间(Ticks)
         public static string SkipVersion = "";         // 用户选了"跳过此版本"的版本号
         public static bool LastFilesMode = false;   // 上次关闭时停在"文件夹"
+        public static string FolderWin = "";       // 列表模式下文件夹窗口的位置和大小 "x,y,w,h"
+        public static bool FolderPinned = true;    // 文件夹窗口钉在最前面
         public static bool WinV = true;            // 用 Win+V 呼出(接管系统自带的剪切板历史)
         public static bool AutoPaste = true;       // 选中后自动粘贴
         public static bool RecordImages = true;    // 是否记录图片
@@ -66,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.5";
+        public const string Version = "0.6";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -154,6 +156,8 @@ namespace Glean
                             case "lastcheck": LastUpdateCheck = long.Parse(v, CultureInfo.InvariantCulture); break;
                             case "skipversion": SkipVersion = v; break;
                             case "lastfiles": LastFilesMode = v == "1"; break;
+                            case "folderwin": FolderWin = v; break;
+                            case "folderpin": FolderPinned = v == "1"; break;
                             case "winv": WinV = v == "1"; break;
                             case "autopaste": AutoPaste = v == "1"; break;
                             case "images": RecordImages = v == "1"; break;
@@ -200,6 +204,8 @@ namespace Glean
                     "lastcheck=" + LastUpdateCheck.ToString(CultureInfo.InvariantCulture),
                     "skipversion=" + SkipVersion,
                     "lastfiles=" + (LastFilesMode ? "1" : "0"),
+                    "folderwin=" + FolderWin,
+                    "folderpin=" + (FolderPinned ? "1" : "0"),
                     "winv=" + (WinV ? "1" : "0"),
                     "autopaste=" + (AutoPaste ? "1" : "0"),
                     "images=" + (RecordImages ? "1" : "0"),
@@ -628,6 +634,16 @@ namespace Glean
         [DllImport("user32.dll")] public static extern bool IsProcessDPIAware();
         [DllImport("imm32.dll")] public static extern uint ImmGetVirtualKey(IntPtr hWnd);
         [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] public static extern int GetWindowLong(IntPtr h, int index);
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] public static extern int SetWindowLong(IntPtr h, int index, int value);
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr h, uint affinity);
+
+        // 截屏时把这个窗口"隐身"(Win10 2004 及以上支持),用来给自己拍身后的背景
+        public static bool ExcludeFromCapture(IntPtr h, bool on)
+        {
+            try { return SetWindowDisplayAffinity(h, on ? 0x11u : 0u); } catch { return false; }
+        }
 
         // 低级键盘钩子(用来接管 Win+V)
         public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -2194,6 +2210,66 @@ namespace Glean
             if (hover) Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 10);
             Gfx.Text(g, Glyph, Gfx.Symbol, new Rectangle(0, 0, Width, Height),
                 hover ? t.Text : t.Sub, TextFormatFlags.HorizontalCenter);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = false; Invalidate(); }
+    }
+
+    // 文件夹窗口标题栏上的小按钮:图钉(钉在最前面)/ 最小化
+    class WinButton : Control
+    {
+        public bool IsPin;      // true 图钉  false 最小化
+        public bool Active;     // 图钉:是否钉住
+        bool hover;
+
+        public WinButton()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.Selectable, false);
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Theme t = Theme.Cur;
+            Gfx.PaintParentBack(this, g);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (hover) Gfx.FillRound(g, t.Input, new Rectangle(0, 0, Width, Height), 10);
+            float cx = Width / 2f, cy = Height / 2f;
+            if (!IsPin)
+            {
+                using (Pen p = new Pen(hover ? t.Text : t.Sub, Gfx.F(1.8f)))
+                {
+                    p.StartCap = p.EndCap = LineCap.Round;
+                    g.DrawLine(p, cx - Gfx.F(6), cy + Gfx.F(1), cx + Gfx.F(6), cy + Gfx.F(1));
+                }
+                return;
+            }
+            // 图钉:钉住时竖直、主题色实心;没钉住时斜着、空心
+            Color c = Active ? t.Accent : (hover ? t.Text : t.Sub);
+            GraphicsState st = g.Save();
+            g.TranslateTransform(cx, cy);
+            if (!Active) g.RotateTransform(45f);
+            float u = Gfx.F(1f);
+            using (GraphicsPath head = new GraphicsPath())
+            {
+                head.AddLine(-4 * u, -8 * u, 4 * u, -8 * u);
+                head.AddLine(3 * u, -7 * u, 3 * u, -2 * u);
+                head.AddLine(6 * u, 2 * u, -6 * u, 2 * u);
+                head.AddLine(-3 * u, -2 * u, -3 * u, -7 * u);
+                head.CloseFigure();
+                if (Active) using (SolidBrush b = new SolidBrush(c)) g.FillPath(b, head);
+                using (Pen p = new Pen(c, Gfx.F(1.5f))) { p.LineJoin = LineJoin.Round; g.DrawPath(p, head); }
+            }
+            using (Pen n = new Pen(c, Gfx.F(1.6f)))
+            {
+                n.EndCap = LineCap.Round;
+                g.DrawLine(n, 0, 2 * u, 0, 8 * u);
+            }
+            g.Restore(st);
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }
@@ -6132,7 +6208,9 @@ namespace Glean
         static readonly object gate = new object();
         static readonly Dictionary<string, Bitmap> mem = new Dictionary<string, Bitmap>();
         static readonly Queue<string> order = new Queue<string>();
-        const int MaxMem = 800;
+        static readonly Dictionary<string, long> pixels = new Dictionary<string, long>();
+        static long totalPixels;
+        static long Budget { get { long u = Gfx.S(96); return 800L * u * u; } }   // 约等于 800 张普通缩略图
         static string dir;
 
         public static string Key(string path, long size, DateTime modified, int want)
@@ -6174,9 +6252,19 @@ namespace Glean
             lock (gate)
             {
                 if (mem.ContainsKey(key)) return;
+                long px = 1;
+                try { px = (long)b.Width * b.Height; } catch { }
                 mem[key] = b;
+                pixels[key] = px;
+                totalPixels += px;
                 order.Enqueue(key);
-                while (mem.Count > MaxMem && order.Count > 0) mem.Remove(order.Dequeue());
+                while (totalPixels > Budget && order.Count > 1)
+                {
+                    string old = order.Dequeue();
+                    long op;
+                    if (pixels.TryGetValue(old, out op)) { totalPixels -= op; pixels.Remove(old); }
+                    mem.Remove(old);
+                }
             }
         }
 
@@ -6283,14 +6371,15 @@ namespace Glean
                     continue;
                 }
                 // 先查内存缓存,再查硬盘缓存,都没有才真正去生成
-                string key = ThumbCache.Key(e.Path, e.Size, e.Modified, Gfx.S(96));
+                int want = e.Want > 0 ? e.Want : Gfx.S(96);
+                string key = ThumbCache.Key(e.Path, e.Size, e.Modified, want);
                 b = ThumbCache.GetMem(key);
                 if (b == null)
                 {
                     b = ThumbCache.LoadDisk(key);
                     if (b == null)
                     {
-                        try { b = ShellThumbs.Get(e.Path, Gfx.S(96)); } catch { b = null; }
+                        try { b = ShellThumbs.Get(e.Path, want); } catch { b = null; }
                         if (b != null) ThumbCache.SaveDisk(key, b);   // 先存盘,再交给界面去画(避免两个线程同时用一张图)
                     }
                     if (b != null) ThumbCache.PutMem(key, b);
@@ -6313,7 +6402,7 @@ namespace Glean
         public class Folder
         {
             public string Path;
-            public int View;   // 0 网格  1 列表
+            public int View;   // 0 中图  1 列表  2 小图  3 大图
         }
 
         public static List<Folder> Items = new List<Folder>();
@@ -6334,7 +6423,8 @@ namespace Glean
                     int tab = line.IndexOf('\t');
                     if (tab <= 0) continue;
                     Folder f = new Folder();
-                    f.View = line.Substring(0, tab) == "1" ? 1 : 0;
+                    int vw;
+                    f.View = int.TryParse(line.Substring(0, tab), out vw) && vw >= 0 && vw <= 3 ? vw : 0;
                     f.Path = line.Substring(tab + 1).Trim();
                     if (f.Path.Length > 0) Items.Add(f);
                 }
@@ -6393,7 +6483,7 @@ namespace Glean
         };
 
         public string Root, Current;
-        public int ViewMode;   // 0 网格  1 列表
+        public int ViewMode;   // 0 中图  1 列表  2 小图  3 大图
         List<FileEntry> all = new List<FileEntry>();
         List<FileEntry> shown = new List<FileEntry>();
         readonly HashSet<FileEntry> sel = new HashSet<FileEntry>();
@@ -6405,7 +6495,9 @@ namespace Glean
         int downIdx = -1;
         bool dragArmed;
         readonly List<KeyValuePair<Rectangle, string>> crumbs = new List<KeyValuePair<Rectangle, string>>();
-        Rectangle backRect, gridBtn, listBtn;
+        Rectangle backRect;
+        readonly Rectangle[] viewBtns = new Rectangle[4];   // 小 中 大 列表
+        static readonly int[] ViewOrder = new int[] { 1, 2, 0, 3 };   // Ctrl+滚轮:列表 → 小 → 中 → 大
 
         public event Action<string> FileOpened;
         public event Action SelectionChanged;
@@ -6441,15 +6533,18 @@ namespace Glean
         // ---------------- 尺寸
         static int BarH { get { return Gfx.S(38); } }
         static int Pad { get { return Gfx.S(14); } }
-        static int TileW { get { return Gfx.S(112); } }
-        static int TileH { get { return Gfx.S(124); } }
+        bool Grid { get { return ViewMode != 1; } }
+        int TileW { get { return Gfx.S(ViewMode == 2 ? 84 : ViewMode == 3 ? 168 : 112); } }
+        int TileH { get { return Gfx.S(ViewMode == 2 ? 100 : ViewMode == 3 ? 190 : 124); } }
+        int ThumbBox { get { return Gfx.S(ViewMode == 2 ? 52 : ViewMode == 3 ? 136 : 76); } }
+        int ThumbWant { get { return Gfx.S(ViewMode == 3 ? 176 : 96); } }   // 大图用更清晰的缩略图
         static int Gap { get { return Gfx.S(8); } }
         static int RowH { get { return Gfx.S(38); } }
         int Top0 { get { return BarH + Gfx.S(6); } }
 
         int Cols
         {
-            get { return ViewMode == 0 ? Math.Max(1, (Width - Pad * 2 + Gap) / (TileW + Gap)) : 1; }
+            get { return Grid ? Math.Max(1, (Width - Pad * 2 + Gap) / (TileW + Gap)) : 1; }
         }
 
         int TotalH
@@ -6457,8 +6552,8 @@ namespace Glean
             get
             {
                 if (shown.Count == 0) return Height;
-                int rows = ViewMode == 0 ? (shown.Count + Cols - 1) / Cols : shown.Count;
-                int rh = ViewMode == 0 ? TileH + Gap : RowH;
+                int rows = Grid ? (shown.Count + Cols - 1) / Cols : shown.Count;
+                int rh = Grid ? TileH + Gap : RowH;
                 return Top0 + rows * rh + Gfx.S(8);
             }
         }
@@ -6468,7 +6563,7 @@ namespace Glean
         // 内容坐标(未减去滚动)
         Rectangle ItemRect(int i)
         {
-            if (ViewMode == 0)
+            if (Grid)
             {
                 int c = Cols;
                 return new Rectangle(Pad + (i % c) * (TileW + Gap), Top0 + (i / c) * (TileH + Gap), TileW, TileH);
@@ -6481,7 +6576,7 @@ namespace Glean
             if (p.Y < BarH) return -1;
             int y = p.Y + scrollY;
             int i;
-            if (ViewMode == 0)
+            if (Grid)
             {
                 int col = (p.X - Pad) / (TileW + Gap);
                 int row = (y - Top0) / (TileH + Gap);
@@ -6566,7 +6661,7 @@ namespace Glean
                             if (keepState && old.TryGetValue(fi.FullName, out e) && e.IsDir == isDir && e.Size == size && e.Modified == mod)
                             {
                                 old.Remove(fi.FullName);
-                                if (!e.Done) e.Requested = false;   // 之前没生成完的,按新一轮重新排队
+                                if (!e.Done || e.Want != ThumbWant) e.Requested = false;   // 之前没生成完的(或大小不对),按新一轮重新排队
                             }
                             else
                             {
@@ -6577,9 +6672,10 @@ namespace Glean
                                 e.Size = size;
                                 e.Modified = mod;
                                 // 内存里已经有这张缩略图:直接用,一点都不用等
-                                Bitmap hit = ThumbCache.GetMem(ThumbCache.Key(e.Path, size, mod, Gfx.S(96)));
+                                Bitmap hit = ThumbCache.GetMem(ThumbCache.Key(e.Path, size, mod, ThumbWant));
                                 if (hit != null)
                                 {
+                                    e.Want = ThumbWant;
                                     e.Thumb = hit;
                                     e.Done = true;
                                     e.Requested = true;
@@ -6651,7 +6747,7 @@ namespace Glean
         {
             if (shown.Count == 0) return;
             int i = focusIdx < 0 ? 0 : focusIdx;
-            if (ViewMode == 0) i += dx + dy * Cols;
+            if (Grid) i += dx + dy * Cols;
             else i += dy != 0 ? dy : dx;
             SelectOnly(Math.Max(0, Math.Min(shown.Count - 1, i)));
         }
@@ -6708,17 +6804,41 @@ namespace Glean
         void SetView(int m)
         {
             if (m == ViewMode) return;
+            int oldWant = ThumbWant;
             ViewMode = m;
+            if (ThumbWant != oldWant) ResetThumbs();
             scrollY = 0;
             if (focusIdx >= 0) EnsureVisible(focusIdx);
             Invalidate();
             if (ViewModeChanged != null) ViewModeChanged(m);
         }
 
+        // 换了缩略图清晰度:旧图先留着当占位(不会变黑),新图生成好了再替换
+        void ResetThumbs()
+        {
+            ThumbLoader.NewGeneration();
+            foreach (FileEntry fe in all)
+            {
+                Bitmap hit = ThumbCache.GetMem(ThumbCache.Key(fe.Path, fe.Size, fe.Modified, ThumbWant));
+                if (hit != null) { fe.Thumb = hit; fe.Done = true; fe.Requested = true; fe.Want = ThumbWant; }
+                else fe.Requested = false;
+            }
+        }
+
+        // Ctrl+滚轮:列表 / 小图 / 中图 / 大图 之间切换
+        public void StepView(int dir)
+        {
+            int k = Array.IndexOf(ViewOrder, ViewMode);
+            if (k < 0) k = 2;
+            k = Math.Max(0, Math.Min(ViewOrder.Length - 1, k + dir));
+            SetView(ViewOrder[k]);
+        }
+
         // ---------------- 鼠标
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
+            if ((ModifierKeys & Keys.Control) != 0) { StepView(e.Delta > 0 ? 1 : -1); return; }
             scrollY = Math.Max(0, Math.Min(MaxScroll, scrollY - e.Delta / 120 * Gfx.S(60)));
             Invalidate();
         }
@@ -6732,8 +6852,8 @@ namespace Glean
             {
                 if (e.Button != MouseButtons.Left) return;
                 if (backRect.Contains(e.Location)) { GoUp(); return; }
-                if (gridBtn.Contains(e.Location)) { SetView(0); return; }
-                if (listBtn.Contains(e.Location)) { SetView(1); return; }
+                for (int vb = 0; vb < 4; vb++)
+                    if (viewBtns[vb].Contains(e.Location)) { SetView(new int[] { 2, 0, 3, 1 }[vb]); return; }
                 foreach (KeyValuePair<Rectangle, string> c in crumbs)
                     if (c.Key.Contains(e.Location)) { Navigate(c.Value); return; }
                 return;
@@ -6808,7 +6928,7 @@ namespace Glean
             bool hand = false;
             if (e.Y < BarH)
             {
-                hand = backRect.Contains(e.Location) || gridBtn.Contains(e.Location) || listBtn.Contains(e.Location);
+                hand = backRect.Contains(e.Location) || viewBtns.Any(vr => vr.Contains(e.Location));
                 foreach (KeyValuePair<Rectangle, string> c in crumbs) if (c.Key.Contains(e.Location)) hand = true;
             }
             Cursor = hand ? Cursors.Hand : Cursors.Default;
@@ -6865,7 +6985,7 @@ namespace Glean
 
         void DrawThumb(Graphics g, FileEntry e, Rectangle box)
         {
-            if (!e.Requested) ThumbLoader.Request(e);
+            if (!e.Requested) { e.Want = ThumbWant; ThumbLoader.Request(e); }
             Bitmap b = e.Thumb;
             if (b == null)
             {
@@ -6907,7 +7027,8 @@ namespace Glean
             Gfx.PaintParentBack(this, g);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             crumbs.Clear();
-            backRect = gridBtn = listBtn = Rectangle.Empty;
+            backRect = Rectangle.Empty;
+            for (int vb = 0; vb < 4; vb++) viewBtns[vb] = Rectangle.Empty;
 
             if (Root == null)
             {
@@ -6938,7 +7059,7 @@ namespace Glean
 
             g.SetClip(content);
             int first = 0;
-            if (ViewMode == 0) first = Math.Max(0, (scrollY - Top0) / (TileH + Gap)) * Cols;
+            if (Grid) first = Math.Max(0, (scrollY - Top0) / (TileH + Gap)) * Cols;
             else first = Math.Max(0, (scrollY - Top0) / RowH);
             for (int i = first; i < shown.Count; i++)
             {
@@ -6946,7 +7067,7 @@ namespace Glean
                 r.Offset(0, -scrollY);
                 if (r.Y > Height) break;
                 if (r.Bottom < BarH) continue;
-                if (ViewMode == 0) DrawTile(g, i, r, t);
+                if (Grid) DrawTile(g, i, r, t);
                 else DrawRowItem(g, i, r, t);
             }
             g.ResetClip();
@@ -6966,29 +7087,49 @@ namespace Glean
             int x = Pad;
             bool atRoot = Util.SamePath(Current, Root);
 
-            // 右侧:项目数 + 网格/列表切换
-            int bs = Gfx.S(28);
-            listBtn = new Rectangle(Width - Pad - bs, cy - bs / 2, bs, bs);
-            gridBtn = new Rectangle(listBtn.X - bs - Gfx.S(2), cy - bs / 2, bs, bs);
-            Gfx.FillRound(g, Color.FromArgb(t.Dark ? 46 : 26, t.Text), ViewMode == 0 ? gridBtn : listBtn, 7);
-            using (SolidBrush ib = new SolidBrush(ViewMode == 0 ? t.Text : t.Sub))
+            // 右侧:项目数 + 小图 / 中图 / 大图 / 列表 切换(一组小按钮)
+            int bs = Gfx.S(26);
+            int[] modes = new int[] { 2, 0, 3, 1 };
+            Rectangle group = new Rectangle(Width - Pad - bs * 4 - Gfx.S(4), cy - bs / 2 - Gfx.S(2), bs * 4 + Gfx.S(4), bs + Gfx.S(4));
+            Gfx.FillRound(g, Color.FromArgb(t.Dark ? 26 : 14, t.Text), group, 9);
+            for (int vb = 0; vb < 4; vb++)
             {
-                int q = Gfx.S(5), gp = Gfx.S(2);
-                int gx = gridBtn.X + (bs - q * 2 - gp) / 2, gy = gridBtn.Y + (bs - q * 2 - gp) / 2;
-                g.FillRectangle(ib, gx, gy, q, q);
-                g.FillRectangle(ib, gx + q + gp, gy, q, q);
-                g.FillRectangle(ib, gx, gy + q + gp, q, q);
-                g.FillRectangle(ib, gx + q + gp, gy + q + gp, q, q);
-            }
-            using (Pen lp = new Pen(ViewMode == 1 ? t.Text : t.Sub, Gfx.F(1.6f)))
-            {
-                int lx = listBtn.X + Gfx.S(8), lw = bs - Gfx.S(16);
-                for (int k = -1; k <= 1; k++) g.DrawLine(lp, lx, cy + k * Gfx.S(5), lx + lw, cy + k * Gfx.S(5));
+                Rectangle br = new Rectangle(group.X + Gfx.S(2) + vb * bs, group.Y + Gfx.S(2), bs, bs);
+                viewBtns[vb] = br;
+                bool on = ViewMode == modes[vb];
+                if (on) Gfx.FillRound(g, Color.FromArgb(t.Dark ? 60 : 255, t.Dark ? t.Text : Color.White), br, 7);
+                Color ic = on ? t.Text : t.Sub;
+                using (SolidBrush ib = new SolidBrush(ic))
+                {
+                    int ccx = br.X + bs / 2, ccy = br.Y + bs / 2;
+                    if (modes[vb] == 1)
+                    {
+                        using (Pen lp = new Pen(ic, Gfx.F(1.6f)))
+                        {
+                            int lw = Gfx.S(12);
+                            for (int k = -1; k <= 1; k++) g.DrawLine(lp, ccx - lw / 2, ccy + k * Gfx.S(4), ccx + lw / 2, ccy + k * Gfx.S(4));
+                        }
+                    }
+                    else
+                    {
+                        // 小图 3×3,中图 2×2,大图 1 块
+                        int n = modes[vb] == 2 ? 3 : modes[vb] == 0 ? 2 : 1;
+                        int total = Gfx.S(13), gp = n == 1 ? 0 : Gfx.S(2);
+                        int q = (total - gp * (n - 1)) / n;
+                        int sx = ccx - (q * n + gp * (n - 1)) / 2, sy = ccy - (q * n + gp * (n - 1)) / 2;
+                        for (int r0 = 0; r0 < n; r0++)
+                            for (int c0 = 0; c0 < n; c0++)
+                            {
+                                Rectangle cell = new Rectangle(sx + c0 * (q + gp), sy + r0 * (q + gp), q, q);
+                                if (n == 1) Gfx.FillRound(g, ic, cell, 2); else g.FillRectangle(ib, cell);
+                            }
+                    }
+                }
             }
             string count = shown.Count + " 项";
             Size cs = TextRenderer.MeasureText(count, Gfx.Small);
-            int limit = gridBtn.X - cs.Width - Gfx.S(18);
-            Gfx.Text(g, count, Gfx.Small, new Rectangle(gridBtn.X - cs.Width - Gfx.S(8), 0, cs.Width, BarH), t.Sub, TextFormatFlags.Left);
+            int limit = group.X - cs.Width - Gfx.S(18);
+            Gfx.Text(g, count, Gfx.Small, new Rectangle(group.X - cs.Width - Gfx.S(10), 0, cs.Width, BarH), t.Sub, TextFormatFlags.Left);
 
             // 左侧:返回 + 路径
             if (!atRoot)
@@ -7077,7 +7218,7 @@ namespace Glean
         {
             FileEntry e = shown[i];
             DrawSelection(g, i, r, t, 10);
-            int bs = Gfx.S(76);
+            int bs = ThumbBox;
             Rectangle box = new Rectangle(r.X + (r.Width - bs) / 2, r.Y + Gfx.S(8), bs, bs);
             DrawThumb(g, e, box);
             Rectangle nr = new Rectangle(r.X + Gfx.S(6), box.Bottom + Gfx.S(5), r.Width - Gfx.S(12), r.Bottom - box.Bottom - Gfx.S(7));
@@ -7121,6 +7262,11 @@ namespace Glean
         readonly Chips modeSwitch = new Chips();     // 左上角:剪切板 | 文件夹
         readonly Chips folderTabs = new Chips();     // 文件夹模式下的常用文件夹标签
         readonly FileView fileView = new FileView();
+        readonly WinButton pinBtn = new WinButton();
+        readonly WinButton minBtn = new WinButton();
+        readonly System.Windows.Forms.Timer glassTimer = new System.Windows.Forms.Timer();
+        Rectangle clipRect;       // 列表模式下剪切板弹出的位置
+        bool taskbarShown;
         bool filesMode;
         int folderIdx = -1;
         bool listMode;
@@ -7209,6 +7355,31 @@ namespace Glean
             Controls.Add(modeSwitch);
             Controls.Add(folderTabs);
             Controls.Add(fileView);
+
+            // ---- 列表模式下的文件夹窗口:图钉 + 最小化
+            Text = Brand.Name + " " + Brand.NameCn;
+            try { if (Brand.LargeIcon != null) Icon = Brand.LargeIcon; } catch { }
+            MaximizeBox = false;
+            pinBtn.IsPin = true;
+            pinBtn.Visible = false;
+            pinBtn.Click += delegate
+            {
+                Config.FolderPinned = !Config.FolderPinned;
+                Config.Save();
+                ApplyWindowStyle();
+                Activate();
+                fileView.Focus();
+            };
+            minBtn.Visible = false;
+            minBtn.Click += delegate
+            {
+                quick.HideLook();
+                WindowState = FormWindowState.Minimized;
+            };
+            Controls.Add(pinBtn);
+            Controls.Add(minBtn);
+            glassTimer.Interval = 90;
+            glassTimer.Tick += delegate { glassTimer.Stop(); CaptureGlassNow(); };
             // 把文件夹从资源管理器拖进面板 = 添加为常用文件夹
             AllowDrop = true;
             foreach (Control c in new Control[] { this, sb, sb.Box, tabs, gear, cardView, listView, modeSwitch, folderTabs, fileView })
@@ -7281,7 +7452,9 @@ namespace Glean
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= 0x80;
+                if (taskbarShown) { cp.ExStyle &= ~0x80; cp.ExStyle |= 0x40000; }   // 在任务栏显示
+                else cp.ExStyle |= 0x80;                                             // 工具窗口,不进任务栏
+                cp.Style |= 0x20000;    // 可以最小化
                 cp.ClassStyle |= 0x20000;
                 return cp;
             }
@@ -7302,12 +7475,16 @@ namespace Glean
                 // 列表模式:竖着排,搜索在上,分类在中,列表在下,快捷键提示在底部
                 int pad = Gfx.S(16);
                 modeSwitch.SetBounds(pad, pad + Gfx.S(5), Gfx.S(124), Gfx.S(30));
-                sb.SetBounds(pad + Gfx.S(132), pad, Width - pad * 2 - Gfx.S(44) - Gfx.S(132), Gfx.S(40));
-                gear.SetBounds(Width - pad - Gfx.S(38), pad + Gfx.S(1), Gfx.S(38), Gfx.S(38));
+                int rightX = Width - pad - Gfx.S(38);
+                gear.SetBounds(rightX, pad + Gfx.S(1), Gfx.S(38), Gfx.S(38));
+                if (pinBtn.Visible) { rightX -= Gfx.S(36); pinBtn.SetBounds(rightX, pad + Gfx.S(3), Gfx.S(34), Gfx.S(34)); }
+                if (minBtn.Visible) { rightX -= Gfx.S(36); minBtn.SetBounds(rightX, pad + Gfx.S(3), Gfx.S(34), Gfx.S(34)); }
+                sb.SetBounds(pad + Gfx.S(132), pad, Math.Max(Gfx.S(60), rightX - Gfx.S(6) - pad - Gfx.S(132)), Gfx.S(40));
                 tabs.SetBounds(pad, Gfx.S(66), Width - pad * 2, Gfx.S(32));
                 listView.SetBounds(Gfx.S(4), Gfx.S(106), Width - Gfx.S(8), Math.Max(10, Height - Gfx.S(106) - Gfx.S(46)));
                 folderTabs.Bounds = tabs.Bounds;
-                fileView.Bounds = listView.Bounds;
+                // 左右各留出几像素给窗口边框,方便拖动调整大小
+                fileView.SetBounds(Gfx.S(7), Gfx.S(106), Width - Gfx.S(14), Math.Max(10, Height - Gfx.S(106) - Gfx.S(46)));
                 return;
             }
             int top = Gfx.S(14);
@@ -7330,6 +7507,7 @@ namespace Glean
         public void PaintBackdrop(Graphics g, Control child)
         {
             if (backdrop == null) { g.Clear(Theme.Cur.Shelf); return; }
+            if (listMode && (backdrop.Width != Width || backdrop.Height != Height)) g.Clear(Theme.Cur.Shelf);   // 窗口刚拖大,新背景还没拍好
             int ox = child == null ? 0 : child.Left;
             int oy = child == null ? 0 : child.Top;
             CompositingMode cm = g.CompositingMode;
@@ -7346,8 +7524,188 @@ namespace Glean
         void BuildBackdrop(Rectangle area)
         {
             if (blurBase != null) { blurBase.Dispose(); blurBase = null; }
-            blurBase = Frost.CaptureBlur(area);
+            if (Config.ShelfTransparency > 0) blurBase = Frost.CaptureBlur(area);   // 0% 不透明:不用拍屏幕
             ComposeBackdrop();
+        }
+
+        // ---------------- 列表模式下的文件夹窗口:能移动、能调大小、能取消置顶
+        bool FolderWindow { get { return listMode && filesMode; } }
+
+        // 移动或调整大小后,重新拍一张自己身后的背景(拍的时候让自己在截图里"隐身")
+        void RefreshGlass()
+        {
+            if (!listMode || !Visible || WindowState == FormWindowState.Minimized) return;
+            if (Config.ShelfTransparency <= 0 || !Native.ExcludeFromCapture(Handle, true))
+            {
+                // 不透明,或者系统太旧不支持:用实色背景
+                if (blurBase != null) { blurBase.Dispose(); blurBase = null; }
+                ComposeBackdrop();
+                Invalidate(true);
+                return;
+            }
+            glassTimer.Stop();
+            glassTimer.Start();   // 等系统把"隐身"生效再拍
+        }
+
+        void CaptureGlassNow()
+        {
+            Bitmap nb = null;
+            try { if (Visible && WindowState == FormWindowState.Normal) nb = Frost.CaptureBlur(Bounds); }
+            catch { nb = null; }
+            Native.ExcludeFromCapture(Handle, false);
+            if (nb == null) return;
+            if (blurBase != null) blurBase.Dispose();
+            blurBase = nb;
+            ComposeBackdrop();
+            Invalidate(true);
+        }
+
+        void SetTaskbar(bool on)
+        {
+            if (on == taskbarShown) return;
+            taskbarShown = on;
+            if (!IsHandleCreated) return;
+            int ex = Native.GetWindowLong(Handle, -20);
+            ex = on ? ((ex & ~0x80) | 0x40000) : ((ex & ~0x40000) | 0x80);
+            bool vis = Visible;
+            if (vis) Native.ShowWindow(Handle, 0);    // 先藏一下,任务栏才会认新样式
+            Native.SetWindowLong(Handle, -20, ex);
+            if (vis) Native.ShowWindow(Handle, 5);
+        }
+
+        // 按当前状态决定:置顶与否、任务栏图标、最小尺寸、标题栏按钮
+        void ApplyWindowStyle()
+        {
+            bool fw = FolderWindow;
+            bool pinned = !fw || Config.FolderPinned;
+            SetTaskbar(!pinned);
+            TopMost = pinned;
+            MinimumSize = fw ? new Size(Gfx.S(400), Gfx.S(340)) : Size.Empty;
+            pinBtn.Visible = fw;
+            pinBtn.Active = Config.FolderPinned;
+            minBtn.Visible = fw && !Config.FolderPinned;
+            pinBtn.Invalidate();
+            OnResize(EventArgs.Empty);
+            Invalidate();
+        }
+
+        static bool ParseRect(string s, out Rectangle r)
+        {
+            r = Rectangle.Empty;
+            try
+            {
+                string[] p = (s ?? "").Split(',');
+                if (p.Length != 4) return false;
+                r = new Rectangle(int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2]), int.Parse(p[3]));
+                return r.Width > 0 && r.Height > 0;
+            }
+            catch { return false; }
+        }
+
+        // 文件夹窗口上次的位置和大小;没记过、或者那块屏幕已经不在了,就用剪切板弹出的位置
+        Rectangle FolderRect()
+        {
+            Rectangle r;
+            if (ParseRect(Config.FolderWin, out r))
+            {
+                foreach (Screen sc in Screen.AllScreens)
+                {
+                    Rectangle wa = sc.WorkingArea;
+                    Rectangle hit = Rectangle.Intersect(wa, r);
+                    if (hit.Width >= Gfx.S(120) && hit.Height >= Gfx.S(80))
+                    {
+                        r.Width = Math.Min(Math.Max(r.Width, Gfx.S(400)), wa.Width);
+                        r.Height = Math.Min(Math.Max(r.Height, Gfx.S(340)), wa.Height);
+                        return r;
+                    }
+                }
+            }
+            return clipRect;
+        }
+
+        void SaveFolderRect()
+        {
+            if (!FolderWindow || WindowState != FormWindowState.Normal) return;
+            Config.FolderWin = Left + "," + Top + "," + Width + "," + Height;
+            Config.Save();
+        }
+
+        // 在剪切板和文件夹之间切换时,窗口回到各自的位置
+        void SwitchBounds()
+        {
+            if (!listMode || !Visible) return;
+            if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
+            Rectangle target = filesMode ? FolderRect() : clipRect;
+            if (target != Bounds)
+            {
+                Bounds = target;
+                RefreshGlass();
+            }
+        }
+
+        // 快捷键:文件夹窗口被挡住或最小化了,就把它叫到最前面
+        public bool BringFrontIfHidden()
+        {
+            if (!Visible || !FolderWindow) return false;
+            if (WindowState != FormWindowState.Minimized && Native.GetForegroundWindow() == Handle) return false;
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Show();
+            Activate();
+            Native.SetForegroundWindow(Handle);
+            fileView.Focus();
+            keyPoll.Start();
+            return true;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct WinRect { public int Left, Top, Right, Bottom; }
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_NCHITTEST = 0x84, WM_MOVING = 0x216, WM_EXITSIZEMOVE = 0x232;
+            const int WM_NCLBUTTONDBLCLK = 0xA3, WM_NCRBUTTONDOWN = 0xA4, WM_NCRBUTTONUP = 0xA5;
+            if (m.Msg == WM_NCHITTEST && FolderWindow && WindowState == FormWindowState.Normal)
+            {
+                base.WndProc(ref m);
+                if (m.Result.ToInt64() != 1) return;   // 只处理窗口自己的空白处
+                long lp = m.LParam.ToInt64();
+                Point pt = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
+                int b = Gfx.S(7);
+                bool l = pt.X < b, r = pt.X >= Width - b, t = pt.Y < b, bt = pt.Y >= Height - b;
+                int ht = 2;   // 空白处:按住就能拖动窗口
+                if (t && l) ht = 13; else if (t && r) ht = 14; else if (bt && l) ht = 16; else if (bt && r) ht = 17;
+                else if (l) ht = 10; else if (r) ht = 11; else if (t) ht = 12; else if (bt) ht = 15;
+                m.Result = (IntPtr)ht;
+                return;
+            }
+            if (FolderWindow && (m.Msg == WM_NCLBUTTONDBLCLK || m.Msg == WM_NCRBUTTONDOWN || m.Msg == WM_NCRBUTTONUP))
+            {
+                m.Result = IntPtr.Zero;   // 不要系统菜单,也不要双击最大化
+                return;
+            }
+            if (m.Msg == WM_MOVING && FolderWindow)
+            {
+                // 靠近屏幕边缘时自动贴齐
+                WinRect wr = (WinRect)Marshal.PtrToStructure(m.LParam, typeof(WinRect));
+                Rectangle wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+                int snap = Gfx.S(14), w = wr.Right - wr.Left, h = wr.Bottom - wr.Top;
+                if (Math.Abs(wr.Left - wa.Left) < snap) wr.Left = wa.Left;
+                else if (Math.Abs(wr.Left + w - wa.Right) < snap) wr.Left = wa.Right - w;
+                if (Math.Abs(wr.Top - wa.Top) < snap) wr.Top = wa.Top;
+                else if (Math.Abs(wr.Top + h - wa.Bottom) < snap) wr.Top = wa.Bottom - h;
+                wr.Right = wr.Left + w;
+                wr.Bottom = wr.Top + h;
+                Marshal.StructureToPtr(wr, m.LParam, false);
+                m.Result = (IntPtr)1;
+                return;
+            }
+            base.WndProc(ref m);
+            if (m.Msg == WM_EXITSIZEMOVE && FolderWindow)
+            {
+                SaveFolderRect();
+                RefreshGlass();
+                if (quick.Visible) ShowFileQuick();
+            }
         }
 
         // 按当前的透明度、主题、面板高度合成成品;很快,随时可以重做
@@ -7439,11 +7797,13 @@ namespace Glean
 
             // 按设置选择视图:卡片(屏幕底部) / 列表(鼠标旁或屏幕中央)
             listMode = Config.Layout == 0;
+            if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
             strip = listMode ? (IClipView)listView : cardView;
             listView.Visible = listMode;
             cardView.Visible = !listMode;
             Reload(2);
             if (reopenFiles) SetMode(true);   // 上次停在文件夹,就直接回到文件夹
+            ApplyWindowStyle();
 
             if (listMode)
             {
@@ -7455,6 +7815,13 @@ namespace Glean
                 else { lx = wa2.Left + (wa2.Width - lw) / 2; ly = wa2.Top + (wa2.Height - lh) / 3; }
                 lx = Math.Max(wa2.Left, Math.Min(lx, wa2.Right - lw));
                 ly = Math.Max(wa2.Top, Math.Min(ly, wa2.Bottom - lh));
+                clipRect = new Rectangle(lx, ly, lw, lh);
+                if (filesMode)
+                {
+                    // 文件夹窗口:回到上次放的位置、上次的大小
+                    Rectangle fr = FolderRect();
+                    lx = fr.X; ly = fr.Y; lw = fr.Width; lh = fr.Height;
+                }
                 hiding = false;
                 BuildBackdrop(new Rectangle(lx, ly, lw, lh));
                 SetBounds(lx, ly + Gfx.S(10), lw, lh);
@@ -7868,6 +8235,8 @@ namespace Glean
                 Reload(1);
                 strip.Focus();
             }
+            ApplyWindowStyle();
+            SwitchBounds();
             Invalidate();
         }
 
@@ -7962,22 +8331,20 @@ namespace Glean
             {
                 try { Process.Start("explorer.exe", "\"" + f.Path + "\""); } catch { }
             });
-            ToolStripMenuItem grid = new ToolStripMenuItem("网格显示", null, delegate
+            string[] viewNames = new string[] { "小图", "中图", "大图", "列表" };
+            int[] viewModes = new int[] { 2, 0, 3, 1 };
+            for (int vk = 0; vk < 4; vk++)
             {
-                f.View = 0;
-                FolderStore.Save();
-                if (i == folderIdx) OpenFolderTab();
-            });
-            grid.Checked = f.View == 0;
-            ToolStripMenuItem list = new ToolStripMenuItem("列表显示", null, delegate
-            {
-                f.View = 1;
-                FolderStore.Save();
-                if (i == folderIdx) OpenFolderTab();
-            });
-            list.Checked = f.View == 1;
-            m.Items.Add(grid);
-            m.Items.Add(list);
+                int mode = viewModes[vk];
+                ToolStripMenuItem vi = new ToolStripMenuItem(viewNames[vk], null, delegate
+                {
+                    f.View = mode;
+                    FolderStore.Save();
+                    if (i == folderIdx) OpenFolderTab();
+                });
+                vi.Checked = f.View == mode;
+                m.Items.Add(vi);
+            }
             m.Items.Add(new ToolStripSeparator());
             if (i > 0) m.Items.Add("左移", null, delegate { MoveFolder(i, i - 1); });
             if (i < FolderStore.Items.Count - 1) m.Items.Add("右移", null, delegate { MoveFolder(i, i + 1); });
@@ -8034,7 +8401,8 @@ namespace Glean
                 ProcessStartInfo psi = new ProcessStartInfo(path);
                 psi.UseShellExecute = true;
                 Process.Start(psi);
-                HideShelf();
+                // 没钉住的文件夹窗口就像普通窗口一样留着;其他情况打开后收起
+                if (!(FolderWindow && !Config.FolderPinned)) HideShelf();
             }
             catch (Exception ex)
             {
@@ -9401,7 +9769,11 @@ namespace Glean
         void TogglePopup(bool fromHotkey)
         {
             if (popup.Visible) { popup.Hide(); return; }
-            if (shelf.Visible) { shelf.HideShelf(); return; }
+            if (shelf.Visible)
+            {
+                if (!shelf.BringFrontIfHidden()) shelf.HideShelf();   // 文件夹窗口被挡住了:先叫到前面
+                return;
+            }
             // 记住当前窗口,选中后好粘贴回去;从托盘点开时不知道目标窗口,只复制
             prevWnd = fromHotkey ? Native.GetForegroundWindow() : IntPtr.Zero;
             hist.Purge(Config.KeepDays);

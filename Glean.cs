@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.16.0.0")]
-[assembly: AssemblyFileVersion("0.16.0.0")]
+[assembly: AssemblyVersion("0.17.0.0")]
+[assembly: AssemblyFileVersion("0.17.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.16";
+        public const string Version = "0.17";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -9609,6 +9609,11 @@ namespace Glean
                             Entry e = new Entry();
                             e.Path = fi.FullName;
                             e.Name = fi.Name;
+                            // 剪切板历史里的截图文件名很长(时间_校验值.png),换成好认的名字
+                            Match hm = Regex.Match(fi.Name, @"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_\d{3}_[0-9a-f]+(_p)?(\.\w+)$");
+                            if (hm.Success)
+                                e.Name = "截图 " + hm.Groups[1].Value + "-" + hm.Groups[2].Value + "-" + hm.Groups[3].Value + " " +
+                                         hm.Groups[4].Value + "." + hm.Groups[5].Value + "." + hm.Groups[6].Value + hm.Groups[8].Value;
                             e.Size = fi.Length;
                             e.Mime = Mime(fi.Name);
                             entries.Add(e);
@@ -9654,12 +9659,29 @@ namespace Glean
                 System.Net.Sockets.TcpClient c;
                 try { c = l.AcceptTcpClient(); }
                 catch { return; }   // 已停止
-                ThreadPool.QueueUserWorkItem(delegate { try { Serve(c); } catch { } finally { try { c.Close(); } catch { } } });
+                ThreadPool.QueueUserWorkItem(delegate { try { Serve(c); } catch { } finally { CloseGently(c); } });
             }
+        }
+
+        // 发完再关:先告诉对方"发完了",把对方还没读的数据读掉,再断开。
+        // 直接关会让系统发出"重置",手机可能把已经收到的内容整个丢掉(下载显示 0 B)
+        static void CloseGently(System.Net.Sockets.TcpClient c)
+        {
+            try
+            {
+                c.Client.Shutdown(System.Net.Sockets.SocketShutdown.Send);
+                c.Client.ReceiveTimeout = 2000;
+                byte[] sink = new byte[4096];
+                DateTime until = DateTime.Now.AddSeconds(3);
+                while (DateTime.Now < until && c.Client.Receive(sink) > 0) { }
+            }
+            catch { }
+            try { c.Close(); } catch { }
         }
 
         static void Serve(System.Net.Sockets.TcpClient c)
         {
+            c.NoDelay = true;
             c.ReceiveTimeout = 10000;
             c.SendTimeout = 60000;
             System.Net.Sockets.NetworkStream ns = c.GetStream();
@@ -9679,8 +9701,17 @@ namespace Glean
             string method = head.Substring(0, sp1);
             string path = head.Substring(sp1 + 1, sp2 - sp1 - 1);
             int q = path.IndexOf('?');
-            if (q >= 0) path = path.Substring(0, q);
+            string query = "";
+            if (q >= 0) { query = path.Substring(q + 1); path = path.Substring(0, q); }
             bool headOnly = method == "HEAD";
+            // 分段下载(手机的下载管理器常用):Range: bytes=开始-结束
+            long rStart = -1, rEnd = -1;
+            Match rm = Regex.Match(head, @"(?im)^Range:\s*bytes=(\d*)-(\d*)\s*$");
+            if (rm.Success)
+            {
+                if (rm.Groups[1].Value.Length > 0) rStart = long.Parse(rm.Groups[1].Value);
+                if (rm.Groups[2].Value.Length > 0) rEnd = long.Parse(rm.Groups[2].Value);
+            }
 
             string tok;
             List<Entry> list;
@@ -9707,14 +9738,50 @@ namespace Glean
             if (rest.StartsWith("f") && int.TryParse(rest.Substring(1), out idx) && idx >= 0 && idx < list.Count)
             {
                 Entry e = list[idx];
-                string disp = "inline; filename*=UTF-8''" + Uri.EscapeDataString(e.Name);
+                bool dl = query.Contains("dl=1");
+                // 文件名:老的下载器只认 filename="英文名",新的认 filename*=UTF-8''中文名,两个都给
+                string ext = System.IO.Path.GetExtension(e.Name);
+                string ascii = Regex.Replace(System.IO.Path.GetFileNameWithoutExtension(e.Name), @"[^A-Za-z0-9._-]+", "_").Trim('_');
+                if (ascii.Length == 0) ascii = "Glean";
+                string disp = (dl ? "attachment" : "inline") + "; filename=\"" + ascii + ext + "\"; filename*=UTF-8''" + Uri.EscapeDataString(e.Name);
                 using (FileStream fs = new FileStream(e.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                 {
-                    string hdr = "HTTP/1.1 200 OK\r\nContent-Type: " + e.Mime + "\r\nContent-Length: " + fs.Length +
-                                 "\r\nContent-Disposition: " + disp + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+                    long total = fs.Length;
+                    long start = 0, end = total - 1;
+                    string status = "200 OK", range = "";
+                    if (rStart >= 0 || rEnd >= 0)
+                    {
+                        if (rStart < 0) { start = Math.Max(0, total - rEnd); end = total - 1; }   // bytes=-500:最后 500 字节
+                        else { start = rStart; end = rEnd >= 0 ? Math.Min(rEnd, total - 1) : total - 1; }
+                        if (start > end || start >= total)
+                        {
+                            Send(ns, 416, "text/plain", new byte[0], "Content-Range: bytes */" + total + "\r\n", headOnly);
+                            return;
+                        }
+                        status = "206 Partial Content";
+                        range = "Content-Range: bytes " + start + "-" + end + "/" + total + "\r\n";
+                    }
+                    long len = total == 0 ? 0 : end - start + 1;
+                    string hdr = "HTTP/1.1 " + status + "\r\nContent-Type: " + e.Mime + "\r\nContent-Length: " + len +
+                                 "\r\n" + range + "Accept-Ranges: bytes\r\nContent-Disposition: " + disp +
+                                 "\r\nLast-Modified: " + File.GetLastWriteTimeUtc(e.Path).ToString("R", CultureInfo.InvariantCulture) +
+                                 "\r\nETag: \"" + tok.Substring(0, 8) + idx + "-" + total + "\"" +
+                                 "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
                     byte[] hb = Encoding.UTF8.GetBytes(hdr);
                     ns.Write(hb, 0, hb.Length);
-                    if (!headOnly) fs.CopyTo(ns, 81920);
+                    if (!headOnly && len > 0)
+                    {
+                        fs.Position = start;
+                        byte[] buf2 = new byte[81920];
+                        long left = len;
+                        while (left > 0)
+                        {
+                            int n = fs.Read(buf2, 0, (int)Math.Min(buf2.Length, left));
+                            if (n <= 0) break;
+                            ns.Write(buf2, 0, n);
+                            left -= n;
+                        }
+                    }
                 }
                 return;
             }
@@ -9723,7 +9790,7 @@ namespace Glean
 
         static void Send(System.Net.Sockets.NetworkStream ns, int code, string type, byte[] body, string extra, bool headOnly)
         {
-            string reason = code == 200 ? "OK" : code == 404 ? "Not Found" : "Gone";
+            string reason = code == 200 ? "OK" : code == 404 ? "Not Found" : code == 416 ? "Range Not Satisfiable" : "Gone";
             string hdr = "HTTP/1.1 " + code + " " + reason + "\r\nContent-Type: " + type + "\r\nContent-Length: " + body.Length +
                          "\r\nCache-Control: no-store\r\nConnection: close\r\n" + (extra ?? "") + "\r\n";
             byte[] hb = Encoding.UTF8.GetBytes(hdr);
@@ -9756,7 +9823,7 @@ namespace Glean
                    "img{max-width:100%;border-radius:10px;display:block}.sub{color:var(--sub);font-size:13px}" +
                    "pre{white-space:pre-wrap;word-break:break-word;margin:0;font:inherit;user-select:text;-webkit-user-select:text}" +
                    ".btn{display:inline-block;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:15px;text-decoration:none;margin-top:10px}" +
-                   ".row{display:flex;justify-content:space-between;align-items:center;gap:10px}.name{word-break:break-all}" +
+                   ".row{display:flex;justify-content:space-between;align-items:center;gap:12px}.row>div{flex:1;min-width:0}.row .btn{flex-shrink:0;white-space:nowrap;margin-top:0}.name{word-break:break-all}" +
                    "</style></head><body><div class='wrap'><div class='brand'>Glean 拾光 · 从电脑带走</div><h1>" + Esc(h1) + "</h1>" + inner + "</div></body></html>";
         }
 
@@ -9776,7 +9843,7 @@ namespace Glean
                 sb.Append("<div class='card'>");
                 if (e.Mime.StartsWith("image/")) sb.Append("<img src='" + url + "' alt=''><p class='sub'>长按图片即可保存到相册</p>");
                 sb.Append("<div class='row'><div><div class='name'>" + Esc(e.Name) + "</div><div class='sub'>" + Size(e.Size) + "</div></div>" +
-                          "<a class='btn' href='" + url + "' download='" + Esc(e.Name) + "'>下载</a></div></div>");
+                          "<a class='btn' href='" + url + "?dl=1' download='" + Esc(e.Name) + "'>下载</a></div></div>");
             }
             sb.Append("<p class='sub'>这个页面由你电脑上的 Glean 临时提供,只在同一个 Wi-Fi 里能打开,10 分钟后自动失效。</p>");
             return Page(title, sb.ToString());

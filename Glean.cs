@@ -8976,6 +8976,7 @@ namespace Glean
     static class Ocr
     {
         static int state;   // 0 还没检查  1 可用  -1 不可用
+        public static double Upscale = 0;     // 放大倍数(0 = 按屏幕缩放自动决定)
         static MethodInfo asTaskOp;
 
         static Type WinRT(string name)
@@ -9042,6 +9043,31 @@ namespace Glean
         // 中文识别结果常在每个字之间加空格("你 好"),去掉中文之间的空格,英文单词之间的保留
         static readonly Regex CjkGap = new Regex(@"(?<=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])[ \t]+(?=[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F])");
 
+        // 全角标点两边多出来的空格
+        static readonly Regex PunctGap = new Regex(@"[ \t]+(?=[\uFF0C\u3002\uFF1A\uFF1B\uFF01\uFF1F\u3001\uFF0E\uFF09\u300D\u300F\u201D\u2019])|(?<=[\uFF0C\u3002\uFF1A\uFF1B\uFF01\uFF1F\u3001\uFF0E\uFF08\u300C\u300E\u201C\u2018])[ \t]+");
+        // 数字中间被认成全角点或间隔号的小数点:128 ． 5 → 128.5
+        static readonly Regex DigitDot = new Regex(@"(?<=\d)[ \t]*[\uFF0E\u00B7\u30FB][ \t]*(?=\d)");
+
+        // 英文里被认成全角的标点:"12345，version" → "12345, version"
+        static readonly Regex AsciiPunct = new Regex(@"(?<=[A-Za-z0-9])[ \t]*([\uFF0C\uFF1A\uFF1B\uFF01\uFF1F])[ \t]*(?=[A-Za-z])");
+        // 中文后面、半角标点前面多出的空格:"文字 :Windows" → "文字:Windows"
+        static readonly Regex CjkAsciiPunct = new Regex(@"(?<=[\u2E80-\u9FFF\uF900-\uFAFF])[ \t]+(?=[:;,.!?])");
+
+        public static string Tidy(string s)
+        {
+            s = CjkGap.Replace(s, "");
+            s = DigitDot.Replace(s, ".");
+            s = PunctGap.Replace(s, "");
+            s = AsciiPunct.Replace(s, delegate(Match m)
+            {
+                string c = m.Groups[1].Value;
+                string a = c == "\uFF0C" ? "," : c == "\uFF1A" ? ":" : c == "\uFF1B" ? ";" : c == "\uFF01" ? "!" : "?";
+                return a + " ";
+            });
+            s = CjkAsciiPunct.Replace(s, "");
+            return s.Trim();
+        }
+
         // 在后台线程调用。noChinese = true 表示系统没有中文识别组件,这次只按其他语言(一般是英文)识别
         public static string Recognize(string imagePath, out bool noChinese)
         {
@@ -9089,7 +9115,8 @@ namespace Glean
             using (Bitmap src = Util.LoadBitmap(imagePath))
             {
                 int big = Math.Max(src.Width, src.Height);
-                double k = big < 1200 ? 2.0 : 1.0;
+                // 截图里的字和屏幕缩放成正比:100% 缩放时字很小,放大 2 倍识别更准;200% 缩放时字已经够大
+                double k = Upscale > 0 ? Upscale : Math.Max(1.0, Math.Min(2.0, 2.0 / Math.Max(0.5, (double)Gfx.Scale)));
                 double limit = maxDim * 0.98;
                 if (big * k > limit) k = limit / big;
                 int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
@@ -9133,7 +9160,7 @@ namespace Glean
                         StringBuilder sb = new StringBuilder();
                         foreach (string l in lines)
                         {
-                            string x = CjkGap.Replace(l ?? "", "").Trim();
+                            string x = Tidy(l ?? "");
                             if (x.Length == 0) continue;
                             if (sb.Length > 0) sb.Append("\r\n");
                             sb.Append(x);

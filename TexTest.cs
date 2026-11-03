@@ -1,58 +1,59 @@
 using System;
 using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 static class TexTest
 {
-    static GraphicsPath Round(Rectangle r, int d)
+    [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr h, IntPtr r, IntPtr rgn, uint flags);
+    static int Measure(Form f, TextBox tb)
     {
-        GraphicsPath p = new GraphicsPath();
-        p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        p.CloseFigure(); return p;
+        Application.DoEvents();
+        System.Threading.Thread.Sleep(300);
+        Application.DoEvents();
+        Rectangle r = tb.RectangleToScreen(tb.ClientRectangle);
+        using (Bitmap b = new Bitmap(r.Width, r.Height))
+        {
+            using (Graphics g = Graphics.FromImage(b)) g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+            int darker = 0, mid = 0, ink = 0;
+            for (int y = 0; y < b.Height; y++)
+                for (int x = 0; x < b.Width; x++)
+                {
+                    Color c = b.GetPixel(x, y);
+                    int s = c.R + c.G + c.B;
+                    if (s < 60) darker++;                 // 比字的颜色(38,33,28 → 99)还黑
+                    else if (s < 140) ink++;
+                    else if (s < 700) mid++;              // 抗锯齿的过渡像素
+                }
+            return darker * 100000 + mid;
+        }
     }
+    static void Run(bool redraw)
+    {
+        Form f = new Form();
+        f.FormBorderStyle = FormBorderStyle.None;
+        f.AllowTransparency = true;
+        f.BackColor = Color.White;
+        f.Bounds = new Rectangle(100, 100, 600, 300);
+        TextBox tb = new TextBox();
+        tb.Multiline = true; tb.BorderStyle = BorderStyle.None; tb.ReadOnly = true;
+        tb.BackColor = Color.White; tb.ForeColor = Color.FromArgb(38, 33, 28);
+        tb.Font = new Font("Microsoft YaHei UI", 20f);
+        tb.Text = "3316980649089088956 测试文字";
+        tb.Bounds = new Rectangle(20, 20, 560, 260);
+        f.Controls.Add(tb);
+        f.Opacity = 0;
+        f.Show();
+        for (int k = 1; k <= 10; k++) { f.Opacity = k / 10.0; Application.DoEvents(); System.Threading.Thread.Sleep(20); }
+        if (redraw) RedrawWindow(f.Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400);
+        int m = Measure(f, tb);
+        Console.WriteLine("FADE redraw=" + redraw + " darkerThanInk=" + (m / 100000) + " smoothEdge=" + (m % 100000));
+        f.Close();
+    }
+    [STAThread]
     static int Main()
     {
-        int w = 300, h = 200;
-        Bitmap body = new Bitmap(w, h, PixelFormat.Format24bppRgb);
-        using (Graphics g = Graphics.FromImage(body))
-        {
-            g.Clear(Color.White);
-            TextRenderer.DrawText(g, "3316980649089\n08895 6 测试文字", new Font("Segoe UI", 20f), new Rectangle(20, 20, 260, 160), Color.FromArgb(38, 33, 28), TextFormatFlags.WordBreak);
-        }
-        string[] names = { "default", "nearest", "nearest+half", "bilinear+half", "drawimage-clip" };
-        for (int c = 0; c < names.Length; c++)
-        {
-            Bitmap dst = new Bitmap(w + 40, h + 40, PixelFormat.Format32bppArgb);
-            Rectangle r = new Rectangle(20, 20, w, h);
-            using (Graphics g = Graphics.FromImage(dst))
-            {
-                g.Clear(Color.Gray);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                if (c == 1 || c == 2) g.InterpolationMode = InterpolationMode.NearestNeighbor;
-                if (c == 2 || c == 3) g.PixelOffsetMode = PixelOffsetMode.Half;
-                if (c == 3) g.InterpolationMode = InterpolationMode.Bilinear;
-                if (c == 4) { using (GraphicsPath cp = Round(r, 28)) { g.SetClip(cp); g.DrawImageUnscaled(body, r.X, r.Y); g.ResetClip(); } }
-                else
-                using (TextureBrush tb = new TextureBrush(body, WrapMode.Clamp))
-                using (GraphicsPath cp = Round(r, 28))
-                {
-                    tb.TranslateTransform(r.X, r.Y);
-                    g.FillPath(tb, cp);
-                }
-            }
-            int diff = 0, shiftDiff = 0;
-            for (int y = 30; y < h - 10; y++)
-                for (int x = 30; x < w - 10; x++)
-                {
-                    Color a = body.GetPixel(x, y), b = dst.GetPixel(x + 20, y + 20);
-                    if (Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B) > 6) diff++;
-                    Color b2 = dst.GetPixel(x + 21, y + 21);
-                    if (Math.Abs(a.R - b2.R) + Math.Abs(a.G - b2.G) + Math.Abs(a.B - b2.B) > 6) shiftDiff++;
-                }
-            Console.WriteLine("TEX " + names[c] + " diffPixels=" + diff + " (if shifted by 1px: " + shiftDiff + ")");
-        }
+        Run(false);
+        Run(true);
         return 0;
     }
 }

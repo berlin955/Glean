@@ -9257,17 +9257,21 @@ namespace Glean
         // 返回 true/false 矩阵(true = 深色),装不下返回 null
         public static bool[,] Encode(byte[] data)
         {
+            // 有非英文字符时,先写一个"内容是 UTF-8"的标记(ECI 26),扫码软件就不用猜编码,中文不会乱码
+            bool eci = false;
+            foreach (byte b0 in data) if (b0 >= 0x80) { eci = true; break; }
             int ver = 0;
             for (int v = 1; v <= 40; v++)
             {
                 int cc = v < 10 ? 8 : 16;
-                if (4 + cc + data.Length * 8 <= DataCodewords(v) * 8) { ver = v; break; }
+                if ((eci ? 12 : 0) + 4 + cc + data.Length * 8 <= DataCodewords(v) * 8) { ver = v; break; }
             }
             if (ver == 0) return null;
 
             // 1) 数据比特
             List<bool> bits = new List<bool>();
             Action<int, int> put = delegate(int val, int n) { for (int i = n - 1; i >= 0; i--) bits.Add(((val >> i) & 1) != 0); };
+            if (eci) { put(7, 4); put(26, 8); }
             put(4, 4);
             put(data.Length, ver < 10 ? 8 : 16);
             foreach (byte b in data) put(b, 8);

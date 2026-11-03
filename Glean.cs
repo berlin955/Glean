@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.14.0.0")]
-[assembly: AssemblyFileVersion("0.14.0.0")]
+[assembly: AssemblyVersion("0.15.0.0")]
+[assembly: AssemblyFileVersion("0.15.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.14";
+        public const string Version = "0.15";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -755,6 +755,16 @@ namespace Glean
             return RelayApps.Contains(n);
         }
 
+        static uint ownPid;
+        static uint OwnPid
+        {
+            get
+            {
+                if (ownPid == 0) using (Process me = Process.GetCurrentProcess()) ownPid = (uint)me.Id;
+                return ownPid;
+            }
+        }
+
         static uint PidOf(IntPtr w)
         {
             if (w == IntPtr.Zero) return 0;
@@ -794,7 +804,7 @@ namespace Glean
             if (pid == 0 || IsRelay(exe) || IsRelay(path))
             {
                 uint fp = PidOf(Native.GetForegroundWindow());
-                if (fp != 0 && fp != (uint)Process.GetCurrentProcess().Id)
+                if (fp != 0 && fp != OwnPid)
                 {
                     string[] f = Lookup(fp);
                     if (f[0] != null || f[2] != null) { path = f[0]; name = f[1]; exe = f[2]; }
@@ -945,7 +955,7 @@ namespace Glean
             Size ls = TextRenderer.MeasureText(label, Small, Size.Empty, nf);
             Size ks = TextRenderer.MeasureText(key, Small, Size.Empty, nf);
             int lx = right - ls.Width;
-            TextRenderer.DrawText(g, label, Small, new Point(lx, cy - ls.Height / 2), t.Sub, nf);
+            TextRenderer.DrawText(g, label, Small, new Point(lx, cy - ls.Height / 2), Theme.Blend(t.Sub, t.Text, 0.45), nf);
             int kh = S(20);
             int kw = Math.Max(kh, ks.Width + S(14));
             Rectangle kr = new Rectangle(lx - S(7) - kw, cy - kh / 2, kw, kh);
@@ -1057,6 +1067,21 @@ namespace Glean
         {
             using (StringFormat sf = SoftFormat(false))
                 return (int)Math.Ceiling(g.MeasureString(s ?? "", f, PointF.Empty, sf).Width);
+        }
+    }
+
+    // 测量各步骤耗时(只在测试时打开,平时不做任何事)
+    static class Perf
+    {
+        public static bool On;
+        public static readonly List<string> Log = new List<string>();
+        static readonly Stopwatch sw = new Stopwatch();
+        public static void Start() { if (On) sw.Restart(); }
+        public static void Mark(string name)
+        {
+            if (!On) return;
+            Log.Add(name + " " + sw.Elapsed.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture));
+            sw.Restart();
         }
     }
 
@@ -2362,7 +2387,7 @@ namespace Glean
             {
                 int d = Gfx.S(4), gap = Gfx.S(4);
                 int x0 = (Width - d * 3 - gap * 2) / 2, y0 = (Height - d) / 2;
-                using (SolidBrush b = new SolidBrush(hover ? t.Text : t.Sub))
+                using (SolidBrush b = new SolidBrush(hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45)))
                     for (int k = 0; k < 3; k++) g.FillEllipse(b, x0 + k * (d + gap), y0, d, d);
                 return;
             }
@@ -2399,7 +2424,7 @@ namespace Glean
             float cx = Width / 2f, cy = Height / 2f;
             if (!IsPin)
             {
-                using (Pen p = new Pen(hover ? t.Text : t.Sub, Gfx.F(1.8f)))
+                using (Pen p = new Pen(hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45), Gfx.F(1.8f)))
                 {
                     p.StartCap = p.EndCap = LineCap.Round;
                     g.DrawLine(p, cx - Gfx.F(5), cy + Gfx.F(1), cx + Gfx.F(5), cy + Gfx.F(1));
@@ -2407,7 +2432,7 @@ namespace Glean
                 return;
             }
             // 图钉:钉住时竖直、主题色实心;没钉住时斜着、空心
-            Color c = Active ? t.Accent : (hover ? t.Text : t.Sub);
+            Color c = Active ? t.Accent : (hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45));
             GraphicsState st = g.Save();
             g.TranslateTransform(cx, cy);
             if (!Active) g.RotateTransform(45f);
@@ -3138,6 +3163,45 @@ namespace Glean
             catch { return null; }
         }
 
+        // 保证文字看得清:量一下背后画面的亮度(取偏亮的那部分),
+        // 深色主题下背景太亮、浅色主题下背景太暗时,自动把着色加深一点;背景本来就合适时完全按用户设的透明度
+        public static int Legible(Bitmap blur, int transparency)
+        {
+            if (blur == null || transparency <= 0) return transparency;
+            Theme t = Theme.Cur;
+            try
+            {
+                List<int> lum = new List<int>();
+                int sx = Math.Max(1, blur.Width / 48), sy = Math.Max(1, blur.Height / 16);
+                for (int y = sy / 2; y < blur.Height; y += sy)
+                    for (int x = sx / 2; x < blur.Width; x += sx)
+                    {
+                        Color c = blur.GetPixel(x, y);
+                        lum.Add((c.R * 299 + c.G * 587 + c.B * 114) / 1000);
+                    }
+                if (lum.Count == 0) return transparency;
+                lum.Sort();
+                double shelf = (t.Shelf.R * 299 + t.Shelf.G * 587 + t.Shelf.B * 114) / 1000.0;
+                double need;   // 至少要盖多少主题色(0~1)
+                if (t.Dark)
+                {
+                    double L = lum[(int)(lum.Count * 0.80)];   // 偏亮的那部分
+                    const double target = 62;
+                    need = L <= target ? 0 : (L - target) / Math.Max(1, L - shelf);
+                }
+                else
+                {
+                    double L = lum[(int)(lum.Count * 0.20)];   // 偏暗的那部分
+                    const double target = 196;
+                    need = L >= target ? 0 : (target - L) / Math.Max(1, shelf - L);
+                }
+                need = Math.Max(0, Math.Min(0.92, need));
+                int maxTrans = (int)Math.Floor((1 - need) * 100);
+                return Math.Min(transparency, maxTrans);
+            }
+            catch { return transparency; }
+        }
+
         // 在 r 上盖主题色 + 高光 + 暖光。panelTop:面板顶边在 r 里的位置;k:缩放(设置里的小预览用)
         public static void Tint(Graphics g, Rectangle r, int transparency, int panelTop, float k)
         {
@@ -3204,7 +3268,7 @@ namespace Glean
                         og.InterpolationMode = InterpolationMode.Bilinear;
                         og.DrawImage(blur, new Rectangle(0, 0, dw, Height));
                     }
-                    Frost.Tint(og, new Rectangle(0, 0, Width, Height), Transparency, 0, k);
+                    Frost.Tint(og, new Rectangle(0, 0, Width, Height), Frost.Legible(blur, Transparency), 0, k);
 
                     // 迷你面板内容:搜索框、分类圆点、几张卡片
                     og.SmoothingMode = SmoothingMode.AntiAlias;
@@ -7576,7 +7640,7 @@ namespace Glean
                 g.DrawImageUnscaled(blurBase, 0, 0);
                 g.CompositingMode = CompositingMode.SourceOver;
                 int panelTop = listMode ? 0 : Math.Max(0, b.Height - ShelfMetrics.ShelfH);
-                Frost.Tint(g, new Rectangle(0, 0, b.Width, b.Height), Config.ShelfTransparency, panelTop, 1f);
+                Frost.Tint(g, new Rectangle(0, 0, b.Width, b.Height), Frost.Legible(blurBase, Config.ShelfTransparency), panelTop, 1f);
             }
             backdrop = b;
         }
@@ -7637,8 +7701,10 @@ namespace Glean
         // ---------------- 显示 / 隐藏(从屏幕底部滑入滑出)
         public void ShowAt()
         {
+            Perf.Start();
             Theme.Refresh();
             ApplyTheme();
+            Perf.Mark("theme");
             // 先按剪切板准备好,下面再按上次停留的模式切过去
             bool reopenFiles = Config.LastFilesMode;
             filesMode = false;
@@ -7652,6 +7718,7 @@ namespace Glean
             sb.Box.Text = "";
             BuildTabs(0);
             suppress = false;
+            Perf.Mark("tabs");
 
             // 按设置选择视图:卡片(屏幕底部) / 列表(鼠标旁或屏幕中央)
             listMode = Config.Layout == 0;
@@ -7660,8 +7727,10 @@ namespace Glean
             listView.Visible = listMode;
             cardView.Visible = !listMode;
             Reload(2);
+            Perf.Mark("reload");
             if (reopenFiles) SetMode(true);   // 上次停在文件夹,就直接回到文件夹
             ApplyWindowStyle();
+            Perf.Mark("mode+style");
 
             if (listMode)
             {
@@ -7676,8 +7745,10 @@ namespace Glean
                 ly = Math.Max(wa2.Top, Math.Min(ly, wa2.Bottom - lh));
                 hiding = false;
                 BuildBackdrop(new Rectangle(lx, ly, lw, lh));
+                Perf.Mark("glass");
                 SetBounds(lx, ly + Gfx.S(10), lw, lh);
                 Show();
+                Perf.Mark("show");
                 Activate();
                 Native.SetForegroundWindow(Handle);
                 if (filesMode) fileView.Focus(); else strip.Focus();
@@ -7696,8 +7767,10 @@ namespace Glean
             int maxH = Gfx.S(100) + Gfx.S((int)Math.Round(236 * 1.6));
             int capTop = Math.Max(scr.Bounds.Top, wa.Bottom - m - maxH);
             BuildBackdrop(new Rectangle(wa.Left + m, capTop, wa.Width - 2 * m, wa.Bottom - m - capTop));
+            Perf.Mark("glass");
             SetBounds(wa.Left + m, scr.Bounds.Bottom, wa.Width - 2 * m, h);
             Show();
+            Perf.Mark("show");
             Activate();
             Native.SetForegroundWindow(Handle);
             if (filesMode) fileView.Focus(); else strip.Focus();
@@ -8233,10 +8306,42 @@ namespace Glean
         }
 
         // 提前创建窗口和所有子控件(只是建好,不显示)
+        // 启动后在后台把第一次打开要用到的代码都先跑一遍(毛玻璃、卡片绘制、列表、搜索),
+        // 这样第一次按快捷键和之后一样快
         public void Prewarm()
         {
             CreateHandles(this);
             IntPtr q = quick.Handle;
+            if (Visible) return;
+            try
+            {
+                Bitmap bl = Frost.CaptureBlur(new Rectangle(0, 0, 96, 48));
+                if (bl != null)
+                {
+                    Frost.Legible(bl, 35);
+                    using (Graphics g = Graphics.FromImage(bl)) Frost.Tint(g, new Rectangle(0, 0, 96, 48), 35, 0, 1f);
+                    bl.Dispose();
+                }
+                bool oldSuppress = suppress;
+                suppress = false;
+                IClipView keep = strip;
+                foreach (IClipView v in new IClipView[] { cardView, listView })
+                {
+                    strip = v;
+                    Reload(2);
+                    Reload(1);   // 打字搜索走的是这条路
+                    Control c = (Control)v;
+                    if (c.Width < 10 || c.Height < 10) c.Size = new Size(Gfx.S(480), Gfx.S(480));   // 还没排过版的视图先给个大小
+                    if (c.Width > 0 && c.Height > 0)
+                        using (Bitmap off = new Bitmap(c.Width, Math.Min(c.Height, Gfx.S(400))))
+                            c.DrawToBitmap(off, new Rectangle(0, 0, off.Width, off.Height));
+                }
+                strip = keep;
+                sb.Box.Text = "a";   // 搜索框的输入处理也先跑一遍
+                sb.Box.Text = "";
+                suppress = oldSuppress;
+            }
+            catch { }
         }
 
         static void CreateHandles(Control c)

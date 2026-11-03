@@ -62,6 +62,52 @@ static class TexTest
         return r;
     }
 
+    static Bitmap Fast2(Rectangle area, int capDiv, bool tintSmall, out double tCap, out double tRest)
+    {
+        Stopwatch w = Stopwatch.StartNew();
+        int qw = Math.Max(1, area.Width / capDiv), qh = Math.Max(1, area.Height / capDiv);
+        Bitmap quarter = new Bitmap(qw, qh, PixelFormat.Format32bppRgb);
+        using (Graphics g = Graphics.FromImage(quarter))
+        {
+            IntPtr dst = g.GetHdc();
+            IntPtr scr = GetDC(IntPtr.Zero);
+            SetStretchBltMode(dst, 3);   // COLORONCOLOR:最快
+            StretchBlt(dst, 0, 0, qw, qh, scr, area.X, area.Y, area.Width, area.Height, 0x00CC0020);
+            ReleaseDC(IntPtr.Zero, scr);
+            g.ReleaseHdc(dst);
+        }
+        tCap = w.Elapsed.TotalMilliseconds; w.Restart();
+        int sw = Math.Max(1, area.Width / 18), sh = Math.Max(1, area.Height / 18);
+        Bitmap small = new Bitmap(sw, sh, PixelFormat.Format32bppPArgb);
+        using (Graphics g = Graphics.FromImage(small))
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.DrawImage(quarter, 0, 0, sw, sh);
+            if (tintSmall) Glean.Frost.Tint(g, new Rectangle(0, 0, sw, sh), 35, 0, sw / (float)area.Width);
+        }
+        quarter.Dispose();
+        Bitmap r = Upscale(small, area.Width, area.Height, InterpolationMode.HighQualityBicubic);
+        small.Dispose();
+        tRest = w.Elapsed.TotalMilliseconds;
+        return r;
+    }
+
+    static Bitmap ComposeFull(Bitmap blur, out double t)
+    {
+        Stopwatch w = Stopwatch.StartNew();
+        Bitmap b = new Bitmap(blur.Width, blur.Height, PixelFormat.Format32bppPArgb);
+        using (Graphics g = Graphics.FromImage(b))
+        {
+            g.CompositingMode = CompositingMode.SourceCopy;
+            g.DrawImageUnscaled(blur, 0, 0);
+            g.CompositingMode = CompositingMode.SourceOver;
+            Glean.Frost.Tint(g, new Rectangle(0, 0, b.Width, b.Height), 35, 0, 1f);
+        }
+        t = w.Elapsed.TotalMilliseconds;
+        return b;
+    }
+
     static double Diff(Bitmap a, Bitmap b)
     {
         long d = 0; int n = 0;
@@ -108,6 +154,16 @@ static class TexTest
                 w.Restart();
                 int lt = Glean.Frost.Legible(cur, 83);
                 double tLeg = w.Elapsed.TotalMilliseconds;
+                double tc, cA, rA, cB, rB, cC, rC;
+                Bitmap curC = ComposeFull(cur, out tc);
+                Bitmap v4 = Fast2(area, 4, false, out cA, out rA);
+                Bitmap v6 = Fast2(area, 6, false, out cB, out rB);
+                Bitmap v6t = Fast2(area, 6, true, out cC, out rC);
+                double tdummy; Bitmap v4c = ComposeFull(v4, out tdummy);
+                Out(string.Format("NEW try{0}: current blur {1:0.0} + compose {2:0.0} = {3:0.0} | cap/4 {4:0.0}+{5:0.0} diff {6:0.0} | cap/6 {7:0.0}+{8:0.0} diff {9:0.0} | cap/6 + tint small {10:0.0}+{11:0.0} (no compose needed) diff-vs-composed {12:0.0}",
+                    trial + 1, tCur, tc, tCur + tc, cA, rA, Diff(cur, v4), cB, rB, Diff(cur, v6), cC, rC, Diff(curC, v6t)));
+                if (trial == 3) { curC.Save("composed-current.png"); v6t.Save("composed-new.png"); }
+                curC.Dispose(); v4.Dispose(); v6.Dispose(); v6t.Dispose(); v4c.Dispose();
                 Out(string.Format("GLASS try{0}: current {1:0.0} ms | fast+bilinear {2:0.0} (cap {3:0.0} down {4:0.0} up {5:0.0}) diff {6:0.0} | fast+bicubic {7:0.0} (up {8:0.0}) diff {9:0.0} | legible {10:0.0} ms -> {11}",
                     trial + 1, tCur, c1 + d1 + u1, c1, d1, u1, Diff(cur, fb), c2 + d2 + u2, u2, Diff(cur, fq), tLeg, lt));
                 if (trial == 3) { cur.Save("cur.png"); fb.Save("fast-bilinear.png"); fq.Save("fast-bicubic.png"); }

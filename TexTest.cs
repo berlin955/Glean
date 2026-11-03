@@ -29,6 +29,9 @@ static class TexTest
                 if (m == null) { Out("QR " + i + " too long"); continue; }
                 using (Bitmap bmp = Glean.QrCode.Render(m, 6, Color.Black, Color.White)) bmp.Save("qr/q" + i + ".png", ImageFormat.Png);
                 File.WriteAllText("qr/q" + i + ".txt", payloads[i], new UTF8Encoding(false));
+                StringBuilder rows = new StringBuilder();
+                for (int y = 0; y < m.GetLength(0); y++) { for (int x = 0; x < m.GetLength(0); x++) rows.Append(m[y, x] ? '1' : '0'); rows.Append('|'); }
+                Out("MAT " + i + " mask=" + Glean.QrCode.LastMask + " " + Convert.ToBase64String(b) + " " + rows.ToString());
                 Out("QR " + i + " bytes=" + b.Length + " size=" + m.GetLength(0) + " (version " + (m.GetLength(0) - 17) / 4 + ")");
             }
             // 每个版本都测一遍:刚好装满的长度

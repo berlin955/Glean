@@ -9252,6 +9252,7 @@ namespace Glean
 
         // 最多能装多少字节(UTF-8)
         public static int MaxBytes { get { return (DataCodewords(40) * 8 - 4 - 16) / 8; } }
+        public static int LastMask;   // 最后一次选用的掩码(测试用)
 
         // 返回 true/false 矩阵(true = 深色),装不下返回 null
         public static bool[,] Encode(byte[] data)
@@ -9379,6 +9380,7 @@ namespace Glean
             }
             ApplyMask(mod, fn, size, best);
             DrawFormat(mod, fn, size, best);
+            LastMask = best;
             return mod;
         }
 

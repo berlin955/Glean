@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.10.0.0")]
-[assembly: AssemblyFileVersion("0.10.0.0")]
+[assembly: AssemblyVersion("0.11.0.0")]
+[assembly: AssemblyFileVersion("0.11.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.10";
+        public const string Version = "0.11";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -964,6 +964,41 @@ namespace Glean
         public static void Text(Graphics g, string s, Font f, Rectangle r, Color c, TextFormatFlags flags)
         {
             TextRenderer.DrawText(g, s, f, r, c, flags | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        }
+
+        // 彩色底上的浅色字:用灰度抗锯齿直接和底色混合。
+        // ClearType 画在彩色色带上会在字的边缘留下一圈发黑的彩边,看起来像"黑边"。
+        static StringFormat softFormat;
+
+        static StringFormat SoftFormat(bool center)
+        {
+            if (softFormat == null)
+            {
+                softFormat = (StringFormat)StringFormat.GenericTypographic.Clone();
+                softFormat.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
+                softFormat.Trimming = StringTrimming.EllipsisCharacter;
+                softFormat.LineAlignment = StringAlignment.Center;
+                softFormat.HotkeyPrefix = System.Drawing.Text.HotkeyPrefix.None;
+            }
+            StringFormat f = (StringFormat)softFormat.Clone();
+            f.Alignment = center ? StringAlignment.Center : StringAlignment.Near;
+            return f;
+        }
+
+        public static void SoftText(Graphics g, string s, Font f, Rectangle r, Color c, bool center)
+        {
+            System.Drawing.Text.TextRenderingHint old = g.TextRenderingHint;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using (StringFormat sf = SoftFormat(center))
+            using (SolidBrush b = new SolidBrush(c))
+                g.DrawString(s ?? "", f, b, new RectangleF(r.X, r.Y, r.Width, r.Height), sf);
+            g.TextRenderingHint = old;
+        }
+
+        public static int SoftWidth(Graphics g, string s, Font f)
+        {
+            using (StringFormat sf = SoftFormat(false))
+                return (int)Math.Ceiling(g.MeasureString(s ?? "", f, PointF.Empty, sf).Width);
         }
     }
 
@@ -4967,22 +5002,17 @@ namespace Glean
             if (hh < Gfx.S(40))
             {
                 // 卡片缩得很小时:标题和时间放在同一行
-                TextFormatFlags one = TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis |
-                                      TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter;
                 string ttl = CardLook.Title(it);
-                Size tsz = TextRenderer.MeasureText(ttl, Gfx.HeaderFont, Size.Empty, TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-                int titleW = Math.Min(tsz.Width, tw0);
-                TextRenderer.DrawText(g, ttl, Gfx.HeaderFont, new Rectangle(tx0, hr.Y, titleW, hh), ink, one);
+                int titleW = Math.Min(Gfx.SoftWidth(g, ttl, Gfx.HeaderFont) + Gfx.S(2), tw0);
+                Gfx.SoftText(g, ttl, Gfx.HeaderFont, new Rectangle(tx0, hr.Y, titleW, hh), ink, false);
                 if (titleW + Gfx.S(30) < tw0)
-                    TextRenderer.DrawText(g, subt, Gfx.Small, new Rectangle(tx0 + titleW + Gfx.S(4), hr.Y, tw0 - titleW - Gfx.S(4), hh), subInk, one);
+                    Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0 + titleW + Gfx.S(8), hr.Y, tw0 - titleW - Gfx.S(8), hh), subInk, false);
             }
             else
             {
                 int blockY = hr.Y + (hh - Gfx.S(40)) / 2;
-                Gfx.Text(g, CardLook.Title(it), Gfx.HeaderFont, new Rectangle(tx0, blockY, tw0, Gfx.S(22)), ink,
-                    TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-                Gfx.Text(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk,
-                    TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+                Gfx.SoftText(g, CardLook.Title(it), Gfx.HeaderFont, new Rectangle(tx0, blockY, tw0, Gfx.S(22)), ink, false);
+                Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk, false);
             }
             if (appIcon != null)
             {
@@ -5008,7 +5038,7 @@ namespace Glean
                 Color sc = it.SwatchColor();
                 using (SolidBrush cb = new SolidBrush(sc)) g.FillRectangle(cb, body);
                 Color swInk = CardLook.InkOn(sc);
-                Gfx.Text(g, it.Text.Trim().ToUpperInvariant(), Gfx.Big, body, swInk, TextFormatFlags.HorizontalCenter);
+                Gfx.SoftText(g, it.Text.Trim().ToUpperInvariant(), Gfx.Big, body, swInk, true);
             }
             else if (it.IsFiles)
             {
@@ -5615,10 +5645,9 @@ namespace Glean
                 Theme.Blend(band, Color.Black, 0.10), LinearGradientMode.Vertical))
                 g.FillRectangle(lb, hr);
             Color ink = CardLook.InkOn(band);
-            Gfx.Text(g, title, Gfx.HeaderFont, new Rectangle(Gfx.S(22), Gfx.S(6), Width - Gfx.S(44), Gfx.S(26)), ink,
-                TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-            Gfx.Text(g, meta, Gfx.Small, new Rectangle(Gfx.S(22), Gfx.S(32), Width - Gfx.S(44), Gfx.S(18)),
-                Theme.Blend(band, ink, 0.80), TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            Gfx.SoftText(g, title, Gfx.HeaderFont, new Rectangle(Gfx.S(22), Gfx.S(6), Width - Gfx.S(44), Gfx.S(26)), ink, false);
+            Gfx.SoftText(g, meta, Gfx.Small, new Rectangle(Gfx.S(22), Gfx.S(32), Width - Gfx.S(44), Gfx.S(18)),
+                Theme.Blend(band, ink, 0.80), false);
             Gfx.Text(g, hint, Gfx.Small,
                 new Rectangle(0, Height - Gfx.S(36), Width, Gfx.S(30)), t.Sub, TextFormatFlags.HorizontalCenter);
             using (Pen p = new Pen(t.Border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
@@ -9065,7 +9094,32 @@ namespace Glean
                 return a + " ";
             });
             s = CjkAsciiPunct.Replace(s, "");
+            // 行首的项目符号常被认成全角点
+            s = Regex.Replace(s, @"^[\uFF0E\u00B7\u30FB\u2022][ \t]*(?=\S)", "• ");
+            // 中文旁边的英文引号多出的空格:的 " 文件夹 " 变成 → 的"文件夹"变成
+            s = Regex.Replace(s, @"(?<=[\u2E80-\u9FFF])[ \t]*""[ \t]*", "\"");
+            s = Regex.Replace(s, @"[ \t]*""[ \t]*(?=[\u2E80-\u9FFF])", "\"");
+            // 被拆成"偏旁 + 部件"的字合回去(这些偏旁单独出现在正常文字里的情况极少)
+            foreach (KeyValuePair<string, string> kv in SplitFix)
+                if (s.IndexOf(kv.Key, StringComparison.Ordinal) >= 0) s = s.Replace(kv.Key, kv.Value);
             return s.Trim();
+        }
+
+        // 只收"单独出现几乎不可能"的偏旁(亻讠氵扌…和右边的刂攵阝),普通字的组合(如"日月")不动,避免误改
+        static readonly KeyValuePair<string, string>[] SplitFix = BuildSplitFix(
+            "亻主住 亻尔你 亻门们 亻也他 亻故做 亻乍作 亻更便 亻吏使 亻立位 亻本体 亻可何 亻旦但 亻氐低 亻氏低 亻言信 亻牛件 亻介价 亻分份 亻壬任 亻木休 亻衣依 亻呆保 亻建健 亻亭停 亻共供 亻直值 亻扁偏 亻昔借 亻专传 亻尤优 亻韦伟 亻列例 亻匕化 亻十什 亻寸付 亻弋代 亻又仅 亻火伙 亻古估 亻圭佳 亻则侧 亻谷俗 彳亍行 彳寺待 彳艮很 彳主往 彳正征 彳走徒 冫欠次 冫令冷 冫隹准 冫夬决 冫咸减 冫兄况 冫水冰 冫中冲 冫争净 冫京凉 讠兑说 讠青请 讠吾语 讠十计 讠己记 讠人认 讠只识 讠舌话 讠周调 讠殳设 讠式试 讠义议 讠寸讨 讠方访 讠吴误 讠卖读 讠果课 讠午许 讠仑论 讠者诸 讠平评 讠羊详 讠炎谈 讠秀诱 讠亥该 讠正证 讠上让 讠川训 讠丁订 讠斥诉 讠司词 讠圣译 讠射谢 讠隹谁 讠胃谓 讠普谱 讠成诚 氵肖消 氵去法 氵青清 氵每海 氵十汁 氵也池 氵由油 氵告浩 氵寅演 氵吉洁 氵良浪 氵则测 氵舌活 氵原源 氵票漂 氵骨滑 氵殳没 氵工江 氵可河 氵先洗 氵皮波 氵主注 氵目泪 氵羊洋 氵又汉 氵少沙 氵齐济 氵胡湖 氵斩渐 氵昆混 氵气汽 氵台治 氵勾沟 氵包泡 扌丁打 扌巴把 扌安按 扌是提 扌妾接 扌由抽 扌白拍 扌乇托 扌巨拒 扌寺持 扌叟搜 扌罢摆 扌番播 扌兆挑 扌立拉 扌合拾 扌支技 扌斤折 扌并拼 扌召招 扌奂换 扌甬捅 扌殳投 扌戈找 扌旨指 扌包抱 扌察擦 扌非排 扌用拥 扌圭挂 扌广扩 扌旦担 扌户护 扌受授 扌卓掉 扌隹推 扌苗描 扌发拨 钅艮银 钅昔错 钅失铁 钅肖销 钅建键 钅连链 钅冈钢 钅中钟 钅戋钱 钅竟镜 钅丑钮 钅十针 纟及级 纟田细 纟冬终 纟会绘 纟吉结 纟色绝 纟合给 纟充统 纟扁编 纟屯纯 纟氏纸 纟千纤 纟工红 纟彖缘 纟东练 纟戋线 纟且组 纟圣经 纟责绩 纟宗综 纟录绿 纟勺约 纟己纪 纟卖续 纟隹维 纟宿缩 纟召绍 饣反饭 饣欠饮 饣并饼 饣包饱 饣官馆 饣我饿 犭苗猫 犭句狗 犭良狼 犭者猪 犭虫独 犭王狂 忄青情 忄亡忙 忄夬快 忄生性 忄曼慢 忄董懂 忄白怕 忄昔惜 忄艮恨 忄感憾 忄不怀 忄肖悄 礻申神 礻兄祝 礻斤祈 礻畐福 礻土社 礻见视 礻且祖 衤寸衬 衤刀初 衤皮被 衤卜补 衤由袖 衤库裤 阝方防 阝东陈 阝余除 阝完院 阝艮限 阝付附 阝人队 阝介阶 阝示际 阝且阻 阝击陆 阝日阳 阝月阴 另刂别 至刂到 歹刂列 禾刂利 冈刂刚 半刂判 居刂剧 亥刂刻 贝刂则 舌刂刮 干刂刊 乘刂剩 畐刂副 害刂割 者阝都 由阝邮 交阝郊 令阝邻 良阝郎 方攵放 己攵改 正攵政 古攵故 交攵效 娄攵数 孝攵教 苟攵敬 求攵救");
+
+        static KeyValuePair<string, string>[] BuildSplitFix(string table)
+        {
+            List<KeyValuePair<string, string>> list = new List<KeyValuePair<string, string>>();
+            HashSet<string> seen = new HashSet<string>();
+            foreach (string tok in table.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (tok.Length != 3) continue;
+                string key = tok.Substring(0, 2);
+                if (seen.Add(key)) list.Add(new KeyValuePair<string, string>(key, tok.Substring(2)));
+            }
+            return list.ToArray();
         }
 
         // 在后台线程调用。noChinese = true 表示系统没有中文识别组件,这次只按其他语言(一般是英文)识别
@@ -9106,34 +9160,127 @@ namespace Glean
                 noChinese = true;
             }
 
-            // 2) 准备图片:透明底铺白;小图放大一倍(小字更容易认),太大的按系统上限缩小
+            // 2) 先按屏幕缩放估一个放大倍数识别一遍,量出字的实际高度;
+            //    字太大或太小(容易把"住"拆成"亻主")就按理想字高重新缩放,再识别一遍
             uint maxDim = 10000;
             try { maxDim = Convert.ToUInt32(tEngine.GetProperty("MaxImageDimension").GetValue(null, null)); } catch { }
+            using (Bitmap src = Util.LoadBitmap(imagePath))
+            {
+                bool invert = InvertDark && LooksDark(src);
+                double k0 = Upscale > 0 ? Upscale : Math.Max(1.0, Math.Min(2.0, 2.0 / Math.Max(0.5, (double)Gfx.Scale)));
+                k0 = Fit(src, k0, maxDim);
+                double height;
+                List<string> lines = RunOnce(engine, src, k0, invert, out height);
+                if (Adaptive && lines.Count > 0 && height > 0)
+                {
+                    double k1 = Fit(src, Math.Max(0.5, Math.Min(3.0, k0 * TargetHeight / height)), maxDim);
+                    if (Math.Abs(k1 / k0 - 1) > 0.15)
+                    {
+                        double h1;
+                        List<string> again = RunOnce(engine, src, k1, invert, out h1);
+                        if (again.Count > 0) lines = again;
+                    }
+                }
+                StringBuilder sb = new StringBuilder();
+                foreach (string l in lines)
+                {
+                    string x = Tidy(l ?? "");
+                    if (x.Length == 0) continue;
+                    if (sb.Length > 0) sb.Append("\r\n");
+                    sb.Append(x);
+                }
+                return sb.ToString();
+            }
+        }
+
+        public static bool Adaptive = true;       // 按实际字高重新缩放
+        public static bool InvertDark = true;     // 深色背景先反色成白底黑字
+        public static double TargetHeight = 24;   // 识别效果最好的字高(像素)
+
+        static double Fit(Bitmap src, double k, uint maxDim)
+        {
+            double limit = maxDim * 0.98;
+            int big = Math.Max(src.Width, src.Height);
+            if (big * k > limit) k = limit / big;
+            return k;
+        }
+
+        // 抽样判断是不是深色背景(深色模式的截图)
+        static bool LooksDark(Bitmap b)
+        {
+            try
+            {
+                long sum = 0;
+                int n = 0;
+                int sx = Math.Max(1, b.Width / 48), sy = Math.Max(1, b.Height / 48);
+                for (int y = 0; y < b.Height; y += sy)
+                    for (int x = 0; x < b.Width; x += sx)
+                    {
+                        Color c = b.GetPixel(x, y);
+                        int lum = (c.R * 299 + c.G * 587 + c.B * 114) / 1000;
+                        sum += c.A < 40 ? 255 : lum;
+                        n++;
+                    }
+                return n > 0 && sum / n < 110;
+            }
+            catch { return false; }
+        }
+
+        // 按倍数 k 缩放(可选反色)后识别一次;height 返回识别到的字的中位高度(缩放后的像素)
+        static List<string> RunOnce(object engine, Bitmap src, double k, bool invert, out double height)
+        {
+            height = 0;
+            Type tEngine = WinRT("Windows.Media.Ocr.OcrEngine");
+            Type tResult = WinRT("Windows.Media.Ocr.OcrResult");
+            Type tLine = WinRT("Windows.Media.Ocr.OcrLine");
+            Type tWord = WinRT("Windows.Media.Ocr.OcrWord");
+            Type tFile = WinRT("Windows.Storage.StorageFile");
+            Type tMode = WinRT("Windows.Storage.FileAccessMode");
+            Type tStream = WinRT("Windows.Storage.Streams.IRandomAccessStream");
+            Type tDecoder = WinRT("Windows.Graphics.Imaging.BitmapDecoder");
+            Type tSoft = WinRT("Windows.Graphics.Imaging.SoftwareBitmap");
+
             string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Glean-OCR");
             Directory.CreateDirectory(dir);
             string file = System.IO.Path.Combine(dir, "ocr-" + Guid.NewGuid().ToString("N") + ".png");
-            using (Bitmap src = Util.LoadBitmap(imagePath))
+            int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
+            using (Bitmap dst = new Bitmap(w, h, PixelFormat.Format24bppRgb))
             {
-                int big = Math.Max(src.Width, src.Height);
-                // 截图里的字和屏幕缩放成正比:100% 缩放时字很小,放大 2 倍识别更准;200% 缩放时字已经够大
-                double k = Upscale > 0 ? Upscale : Math.Max(1.0, Math.Min(2.0, 2.0 / Math.Max(0.5, (double)Gfx.Scale)));
-                double limit = maxDim * 0.98;
-                if (big * k > limit) k = limit / big;
-                int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
-                using (Bitmap dst = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+                using (Graphics g = Graphics.FromImage(dst))
                 {
-                    using (Graphics g = Graphics.FromImage(dst))
+                    g.Clear(invert ? Color.Black : Color.White);   // 透明的地方当背景色
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    if (invert)
                     {
-                        g.Clear(Color.White);
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                        g.DrawImage(src, 0, 0, w, h);
+                        ColorMatrix cm = new ColorMatrix(new float[][]
+                        {
+                            new float[] { -1, 0, 0, 0, 0 },
+                            new float[] { 0, -1, 0, 0, 0 },
+                            new float[] { 0, 0, -1, 0, 0 },
+                            new float[] { 0, 0, 0, 1, 0 },
+                            new float[] { 1, 1, 1, 0, 1 }
+                        });
+                        using (ImageAttributes ia = new ImageAttributes())
+                        {
+                            ia.SetColorMatrix(cm);
+                            g.DrawImage(src, new Rectangle(0, 0, w, h), 0, 0, src.Width, src.Height, GraphicsUnit.Pixel, ia);
+                        }
                     }
-                    dst.Save(file, ImageFormat.Png);
+                    else g.DrawImage(src, 0, 0, w, h);
                 }
+                if (invert)
+                {
+                    // 反色时透明区域(先铺的黑底)也被反成了白色以外的颜色:统一再铺一次白底
+                    using (Bitmap flat = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+                    {
+                        using (Graphics fg = Graphics.FromImage(flat)) { fg.Clear(Color.White); fg.DrawImageUnscaled(dst, 0, 0); }
+                        flat.Save(file, ImageFormat.Png);
+                    }
+                }
+                else dst.Save(file, ImageFormat.Png);
             }
 
-            // 3) 交给系统识别
             try
             {
                 object storageFile = Await(tFile.GetMethod("GetFileFromPathAsync", new Type[] { typeof(string) }).Invoke(null, new object[] { file }), tFile);
@@ -9146,26 +9293,37 @@ namespace Glean
                     {
                         object result = Await(tEngine.GetMethod("RecognizeAsync").Invoke(engine, new object[] { soft }), tResult);
                         List<string> lines = new List<string>();
+                        List<double> hs = new List<double>();
                         try
                         {
                             object ls = tResult.GetProperty("Lines").GetValue(result, null);
                             foreach (object ln in (System.Collections.IEnumerable)ls)
+                            {
                                 lines.Add((string)tLine.GetProperty("Text").GetValue(ln, null));
+                                if (tWord == null) continue;
+                                try
+                                {
+                                    object ws = tLine.GetProperty("Words").GetValue(ln, null);
+                                    foreach (object wd in (System.Collections.IEnumerable)ws)
+                                    {
+                                        object rect = tWord.GetProperty("BoundingRect").GetValue(wd, null);
+                                        hs.Add(Convert.ToDouble(rect.GetType().GetProperty("Height").GetValue(rect, null)));
+                                    }
+                                }
+                                catch { }
+                            }
                         }
                         catch
                         {
                             lines.Clear();
                             lines.Add((string)tResult.GetProperty("Text").GetValue(result, null) ?? "");
                         }
-                        StringBuilder sb = new StringBuilder();
-                        foreach (string l in lines)
+                        if (hs.Count > 0)
                         {
-                            string x = Tidy(l ?? "");
-                            if (x.Length == 0) continue;
-                            if (sb.Length > 0) sb.Append("\r\n");
-                            sb.Append(x);
+                            hs.Sort();
+                            height = hs[hs.Count / 2];
                         }
-                        return sb.ToString();
+                        return lines;
                     }
                     finally { Close(soft); }
                 }

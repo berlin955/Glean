@@ -7,15 +7,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: install Chinese OCR
-        shell: pwsh
-        run: |
-          Get-WindowsCapability -Online | Where-Object Name -like 'Language.OCR*' | Format-Table Name, State
-          Add-WindowsCapability -Online -Name "Language.OCR~~~zh-CN~0.0.1.0"
-      - name: build and run
+      - name: texture test
         shell: cmd
         run: |
           set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          "%CSC%" /nologo /target:exe /codepage:65001 /main:OcrTestNs.TestMain /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:t.exe Glean.cs OcrTest.cs || exit /b 1
-          chcp 65001
-          t.exe
+          "%CSC%" /nologo /target:exe /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:tex.exe TexTest.cs || exit /b 1
+          tex.exe

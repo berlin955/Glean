@@ -8319,6 +8319,7 @@ namespace Glean
                 {
                     strip = v;
                     Reload(2);
+                    Reload(1);   // 打字搜索走的是这条路
                     Control c = (Control)v;
                     if (c.Width < 10 || c.Height < 10) c.Size = new Size(Gfx.S(480), Gfx.S(480));   // 还没排过版的视图先给个大小
                     if (c.Width > 0 && c.Height > 0)
@@ -8326,8 +8327,9 @@ namespace Glean
                             c.DrawToBitmap(off, new Rectangle(0, 0, off.Width, off.Height));
                 }
                 strip = keep;
+                sb.Box.Text = "a";   // 搜索框的输入处理也先跑一遍
+                sb.Box.Text = "";
                 suppress = oldSuppress;
-                Match(hist.Items.Count > 0 ? hist.Items[0] : new Item(), "warm");
             }
             catch { }
         }

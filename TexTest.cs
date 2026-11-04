@@ -27,7 +27,14 @@ static class TexTest
         using (Bitmap b = new Bitmap(r.Width, r.Height))
         {
             using (Graphics g = Graphics.FromImage(b)) g.CopyFromScreen(r.Location, Point.Empty, r.Size);
-            using (MemoryStream ms = new MemoryStream()) { b.Save(ms, ImageFormat.Png); Out("PNG " + (n++).ToString("00") + "-" + name + " " + Convert.ToBase64String(ms.ToArray())); }
+            using (MemoryStream ms = new MemoryStream())
+            {
+                b.Save(ms, ImageFormat.Png);
+                string all = Convert.ToBase64String(ms.ToArray());
+                string id = (n++).ToString("00") + "-" + name;
+                for (int k = 0, part = 0; k < all.Length; k += 6000, part++)
+                    Out("PNGPART " + id + " " + part.ToString("000") + " " + all.Substring(k, Math.Min(6000, all.Length - k)));
+            }
         }
     }
     [STAThread]
@@ -37,6 +44,7 @@ static class TexTest
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         try
         {
+            Out("START");
             Glean.Native.SetProcessDPIAware();
             Glean.Gfx.InitDpi();
             Application.EnableVisualStyles();
@@ -144,6 +152,7 @@ static class TexTest
             }
         }
         catch (Exception ex) { Out("ERROR " + ex); }
+        Out("DONE");
         return 0;
     }
 }

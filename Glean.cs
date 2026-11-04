@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.23.0.0")]
-[assembly: AssemblyFileVersion("0.23.0.0")]
+[assembly: AssemblyVersion("0.24.0.0")]
+[assembly: AssemblyFileVersion("0.24.0.0")]
 
 namespace Glean
 {
@@ -69,7 +69,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.23";
+        public const string Version = "0.24";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -4339,8 +4339,11 @@ namespace Glean
         public static int FooterH { get { return Z(30); } }
         public static int BodyH { get { return CardH - HeaderH - FooterH; } }
         public static int Gap { get { return Z(16); } }
-        // 顶部 60(搜索栏)+ 24(给浮起留的空间)+ 卡片 + 底部 18(投影和滚动条)
-        public static int ShelfH { get { return Gfx.S(60) + Gfx.S(24) + CardH + Gfx.S(18); } }
+        // 顶部 52(搜索栏)+ 浮起留白 + 卡片 + 底部 18(投影和滚动条)
+        public static int TopBar { get { return Gfx.S(52); } }
+        // 卡片上方的留白:选中光圈要 10,再加上悬停浮起的高度(浮起调小,留白也跟着变小)
+        public static int TopRoom { get { return Gfx.S(10) + (int)Math.Ceiling(Gfx.S(10) * Math.Max(0, Math.Min(200, Config.HoverFloat)) / 100f); } }
+        public static int ShelfH { get { return TopBar + TopRoom + CardH + Gfx.S(18); } }
     }
 
     // 来源程序的图标和"主色"(卡片顶部色带的颜色就取自这里)
@@ -4642,7 +4645,7 @@ namespace Glean
         int TotalW { get { return items.Count == 0 ? 0 : Pad * 2 + items.Count * Step - ShelfMetrics.Gap; } }
         float MaxScroll { get { return Math.Max(0, TotalW - Width); } }
         float Clamp(float v) { return Math.Max(0f, Math.Min(MaxScroll, v)); }
-        int BaseY { get { return Gfx.S(24); } }
+        int BaseY { get { return ShelfMetrics.TopRoom; } }
         // 悬停浮起的高度:默认 10 像素,按设置里的比例放大缩小
         static float LiftPx { get { return Gfx.S(10) * Math.Max(0, Math.Min(200, Config.HoverFloat)) / 100f; } }   // 上方留足空间,浮起/拖动的卡片和选中描边都不会被裁掉
 
@@ -7621,7 +7624,8 @@ namespace Glean
             hintsShown = active.ContentWidth <= withHints;
             int tw = (hintsShown || toastText != null) ? withHints : full;
             tabs.SetBounds(tx, top + Gfx.S(2), Math.Max(Gfx.S(120), tw), Gfx.S(32));
-            cardView.SetBounds(0, Gfx.S(60), Width, Math.Max(10, Height - Gfx.S(60) - Gfx.S(3)));
+            int cvTop = ShelfMetrics.TopBar;
+            cardView.SetBounds(0, cvTop, Width, Math.Max(10, Height - cvTop - Gfx.S(3)));
             folderTabs.Bounds = tabs.Bounds;
             fileView.Bounds = cardView.Bounds;
         }
@@ -7981,7 +7985,7 @@ namespace Glean
 
             Screen scr = Screen.FromPoint(Cursor.Position);
             Rectangle wa = scr.WorkingArea;
-            int m = Gfx.S(8), mb = Gfx.S(6);   // 左右留 8,离任务栏 6
+            int m = Gfx.S(8), mb = 0;   // 左右留 8,底边贴着任务栏
             int h = ShelfMetrics.ShelfH;
             hiding = false;
             // 弹出前先拍下面板将要覆盖的那块屏幕,做成毛玻璃背景(往上多拍一些,放大卡片时也够用)

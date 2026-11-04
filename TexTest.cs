@@ -52,7 +52,9 @@ static class TexTest
             foreach (int pct in new int[] { 0, 100, 200 })
             {
                 Glean.Config.HoverFloat = pct;
-                hover.SetValue(cv, pct == 0 ? 2 : 1);
+                shelf.Hide(); shelf.ShowAt(); Pump(900);
+                selF.SetValue(cv, 1);
+                hover.SetValue(cv, 1);
                 kick.Invoke(cv, null);
                 Pump(600);
                 Rectangle sb = Screen.PrimaryScreen.Bounds;

@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.20.0.0")]
-[assembly: AssemblyFileVersion("0.20.0.0")]
+[assembly: AssemblyVersion("0.21.0.0")]
+[assembly: AssemblyFileVersion("0.21.0.0")]
 
 namespace Glean
 {
@@ -68,7 +68,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.20";
+        public const string Version = "0.21";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -672,6 +672,15 @@ namespace Glean
 
         // Windows 11 上让无边框窗口有系统级圆角;旧系统无效果但不会出错
         // Windows 10 1809+ / 11:让窗口标题栏跟随深色模式
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string idList);
+
+        // 让控件自带的滚动条跟随深浅色(Windows 10 1809 及以上支持深色滚动条)
+        public static void ThemeScrollBars(Control c, bool dark)
+        {
+            try { if (c.IsHandleCreated || c.Handle != IntPtr.Zero) SetWindowTheme(c.Handle, dark ? "DarkMode_Explorer" : "Explorer", null); }
+            catch { }
+        }
+
         public static void DarkTitle(IntPtr h, bool dark)
         {
             try
@@ -941,6 +950,31 @@ namespace Glean
         }
 
         // 带一点回弹的缓动(冲过头一点再回来),c1 越大回弹越明显
+        // 动画用的高精度时钟(系统时间每 15 毫秒左右才跳一次,拿来算动画会一卡一卡)
+        static readonly Stopwatch clock = Stopwatch.StartNew();
+        public static double Ms { get { return clock.Elapsed.TotalMilliseconds; } }
+
+        [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint p);
+        [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint p);
+        static int hiRes;
+
+        // 动画播放时把系统计时器调到 1 毫秒精度,帧间隔才均匀;动画结束就恢复,不额外耗电
+        public static void HiRes(bool on)
+        {
+            try
+            {
+                if (on) { if (hiRes++ == 0) timeBeginPeriod(1); }
+                else if (hiRes > 0) { if (--hiRes == 0) timeEndPeriod(1); }
+            }
+            catch { }
+        }
+
+        // 按真实经过的时间换算"每帧靠拢多少",帧间隔忽长忽短时速度也均匀
+        public static float Ease(float perFrame, double dtMs)
+        {
+            return (float)(1 - Math.Pow(1 - perFrame, dtMs / 16.67));
+        }
+
         public static double BackOut(double p, double c1)
         {
             double c3 = c1 + 1;
@@ -2056,10 +2090,15 @@ namespace Glean
             Invalidate();
         }
 
-        Rectangle[] Layout()
+        // 标签放不下时:放得下的照常显示,其余收进末尾的"+N"按钮,点开是个菜单
+        Rectangle moreRect = Rectangle.Empty;
+        int firstHidden = -1;
+        public event Action<bool> MenuState;   // 菜单打开/关闭(面板据此决定失去焦点时要不要收起)
+
+        int FullWidth(out Rectangle[] rs)
         {
             int n = Labels.Length;
-            Rectangle[] rs = new Rectangle[n];
+            rs = new Rectangle[n];
             int gap = Gfx.S(TabStyle ? 20 : 6);
             int x = 0;
             for (int i = 0; i < n; i++)
@@ -2071,7 +2110,66 @@ namespace Glean
                 rs[i] = new Rectangle(x, 0, w, Height);
                 x += w + gap;
             }
+            return n == 0 ? 0 : x - gap;
+        }
+
+        // 全部标签需要多宽(面板用来决定要不要给快捷键提示留位置)
+        public int ContentWidth { get { Rectangle[] r; return FullWidth(out r); } }
+
+        Rectangle[] Layout()
+        {
+            Rectangle[] rs;
+            int total = FullWidth(out rs);
+            moreRect = Rectangle.Empty;
+            firstHidden = -1;
+            if (TabStyle && !Stretch && total > Width && rs.Length > 1)
+            {
+                int gap = Gfx.S(20), moreW = Gfx.S(40);
+                int k = rs.Length;
+                while (k > 1 && rs[k - 1].Right + gap + moreW > Width) k--;
+                firstHidden = k;
+                for (int i = k; i < rs.Length; i++) rs[i] = Rectangle.Empty;
+                int mx = rs[k - 1].Right + gap - Gfx.S(6);
+                moreRect = new Rectangle(mx, 0, Math.Min(moreW, Width - mx), Height);
+            }
             return rs;
+        }
+
+        static string MenuLabel(string s) { return s == "＋" ? "＋ 新建" : s; }
+
+        void ShowMore()
+        {
+            if (firstHidden < 0) return;
+            ContextMenuStrip m = new ContextMenuStrip();
+            for (int i = firstHidden; i < Labels.Length; i++)
+            {
+                int idx = i;
+                ToolStripMenuItem mi = new ToolStripMenuItem(MenuLabel(Labels[i]), HasDot(i) ? DotImage(Dots[i]) : null, delegate
+                {
+                    Selected = idx;
+                    Invalidate();
+                    if (Changed != null) Changed(this, EventArgs.Empty);
+                });
+                mi.Checked = idx == Selected && !Multi;
+                m.Items.Add(mi);
+            }
+            Theme.StyleMenu(m);
+            if (MenuState != null) MenuState(true);
+            m.Closed += delegate { if (MenuState != null) MenuState(false); };
+            m.Show(this, new Point(moreRect.X, Height));
+        }
+
+        static Bitmap DotImage(Color c)
+        {
+            int sz = Gfx.S(12), d = Gfx.S(8);
+            Bitmap b = new Bitmap(sz, sz);
+            using (Graphics g = Graphics.FromImage(b))
+            using (SolidBrush br = new SolidBrush(c))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.FillEllipse(br, (sz - d) / 2, (sz - d) / 2, d, d);
+            }
+            return b;
         }
 
         bool HasDot(int i)
@@ -2079,14 +2177,16 @@ namespace Glean
             return i < Dots.Length && Dots[i] != Color.Empty;
         }
 
-        public int TabAt(Point p) { return HitTest(p); }
+        public int TabAt(Point p) { int h = HitTest(p); return h < 0 ? -1 : h; }
 
         int HitTest(Point p)
         {
             Rectangle[] rs = Layout();
+            if (!moreRect.IsEmpty && moreRect.Contains(p)) return -2;   // "+N"
             for (int i = 0; i < rs.Length; i++)
             {
                 Rectangle r = rs[i];
+                if (r.IsEmpty) continue;
                 if (TabStyle) r.Inflate(Gfx.S(8), 0);
                 if (r.Contains(p)) return i;
             }
@@ -2106,8 +2206,20 @@ namespace Glean
                 // 文字标签 + 底部强调线,比一排按钮更干净
                 using (Pen hp = new Pen(t.Border))
                     g.DrawLine(hp, 0, Height - 1, Width, Height - 1);
+                if (!moreRect.IsEmpty)
+                {
+                    int hiddenN = Labels.Length - firstHidden;
+                    bool selHidden = Selected >= firstHidden;
+                    bool hot = hover == -2;
+                    Rectangle pr = new Rectangle(moreRect.X, (Height - Gfx.S(4) - Gfx.S(22)) / 2, moreRect.Width, Gfx.S(22));
+                    Gfx.FillRound(g, Color.FromArgb(hot ? (t.Dark ? 60 : 40) : (t.Dark ? 34 : 22), t.Text), pr, 99);
+                    Gfx.Text(g, "+" + hiddenN, Gfx.Small, pr, selHidden ? t.Accent : (hot ? t.Text : t.Sub), TextFormatFlags.HorizontalCenter);
+                    if (selHidden)
+                        Gfx.FillRound(g, t.Accent, new Rectangle(moreRect.X, Height - Gfx.S(3), moreRect.Width, Gfx.S(3)), 2);
+                }
                 for (int i = 0; i < rs.Length; i++)
                 {
+                    if (rs[i].IsEmpty) continue;   // 收进"+N"里了
                     bool on = i == Selected;
                     Color fg = (on || i == hover) ? t.Text : t.Sub;
                     Rectangle tr = new Rectangle(rs[i].X, 0, rs[i].Width, Height - Gfx.S(4));
@@ -2159,6 +2271,7 @@ namespace Glean
         {
             base.OnMouseClick(e);
             int i = HitTest(e.Location);
+            if (i == -2) { ShowMore(); return; }
             if (i < 0) return;
             if (e.Button == MouseButtons.Right)
             {
@@ -3749,7 +3862,7 @@ namespace Glean
             ShowInTaskbar = true;
             StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
-            ClientSize = new Size(Gfx.S(780), Gfx.S(600));
+            ClientSize = new Size(Gfx.S(780), Gfx.S(628));
             BackColor = SetPal.Back;
             Font = Gfx.UI;
 
@@ -4031,15 +4144,17 @@ namespace Glean
             hotkey.Height = Gfx.S(32);
             g1.AddRow("呼出面板", "点一下右边的框,再按下新的组合键", hotkey, Gfx.S(210));
             g1.AddRow("使用 Win + V", "替代系统自带的剪切板历史", Switch(tWinV, Config.WinV), Gfx.S(52));
-            y = AddGroup(p, y, "全局快捷键", g1, "以管理员身份运行的窗口里,Win + V 可能仍会弹出系统自带的面板,这时可以用上面的快捷键。");
+            y = AddGroup(p, y, "全局快捷键", g1, "管理员身份运行的窗口里 Win + V 可能仍弹出系统面板,可改用上面的快捷键。");
 
             SettingsGroup g2 = new SettingsGroup();
-            int rh = Gfx.S(40);
+            int rh = Gfx.S(36);
             g2.AddRow("粘贴 / 打开", null, new KeyCaps("Enter"), Gfx.S(160), rh);
             g2.AddRow("快速预览", null, new KeyCaps("空格"), Gfx.S(160), rh);
             g2.AddRow("切换剪切板 / 文件夹", null, new KeyCaps("Ctrl", "Tab"), Gfx.S(160), rh);
             g2.AddRow("直接粘贴第 1~9 条", null, new KeyCaps("Ctrl", "1~9"), Gfx.S(160), rh);
             g2.AddRow("置顶", null, new KeyCaps("Ctrl", "P"), Gfx.S(160), rh);
+            g2.AddRow("删除", null, new KeyCaps("Ctrl", "Delete"), Gfx.S(200), rh);
+            g2.AddRow("撤销刚才的删除", null, new KeyCaps("Ctrl", "Z"), Gfx.S(160), rh);
             AddGroup(p, y, "面板里", g2, null);
         }
 
@@ -4467,7 +4582,9 @@ namespace Glean
         bool dragArmed, reordering;
         int dragIdx = -1, insertIdx = -1, dragMouseX;
         float grabDX;
-        DateTime appearStart = DateTime.MinValue;
+        double appearStart = -1e9;
+        double lastTick;
+        bool animHiRes;
         int appearStagger = 30, appearDur = 260;
         readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
         public string EmptyText { get; set; }
@@ -4563,12 +4680,23 @@ namespace Glean
 
         void Kick()
         {
-            if (!anim.Enabled) anim.Start();
+            if (!anim.Enabled)
+            {
+                lastTick = Gfx.Ms - 16.67;
+                if (!animHiRes) { animHiRes = true; Gfx.HiRes(true); }
+                anim.Start();
+            }
+        }
+
+        void StopAnim()
+        {
+            anim.Stop();
+            if (animHiRes) { animHiRes = false; Gfx.HiRes(false); }
         }
 
         float AppearOf(int i)
         {
-            double ms = (DateTime.Now - appearStart).TotalMilliseconds - Math.Min(i, 14) * appearStagger;
+            double ms = (Gfx.Ms - appearStart) - Math.Min(i, 14) * appearStagger;
             if (ms <= 0) return 0f;
             double p = ms / appearDur;
             if (p >= 1) return 1f;
@@ -4578,6 +4706,10 @@ namespace Glean
         void Animate()
         {
             bool busy = false;
+            double now = Gfx.Ms;
+            double dt = Math.Max(1, Math.Min(50, now - lastTick));
+            lastTick = now;
+            float kScroll = Gfx.Ease(0.18f, dt), kX = Gfx.Ease(0.2f, dt), kLift = Gfx.Ease(0.3f, dt);
             if (reordering)
             {
                 // 拖到两侧边缘时自动滚动
@@ -4590,7 +4722,7 @@ namespace Glean
             // 滚动用弹簧:有惯性,到边缘会轻轻回弹
             float d = targetX - scrollX;
             if (Math.Abs(d) < 0.6f) { scrollX = targetX; scrollV = 0; }
-            else { scrollX += d * 0.18f; busy = true; }
+            else { scrollX += d * kScroll; busy = true; }
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -4603,16 +4735,16 @@ namespace Glean
                     // 平滑靠拢,不回弹
                     float dx = tx - a.X;
                     if (Math.Abs(dx) < 0.5f) a.X = tx;
-                    else { a.X += dx * 0.2f; busy = true; }
+                    else { a.X += dx * kX; busy = true; }
                 }
                 float tl = reordering ? 0f : (i == hover ? 1f : (i == selected ? 0.5f : 0f));
                 float dl = tl - a.Lift;
                 if (Math.Abs(dl) < 0.02f) a.Lift = tl;
-                else { a.Lift += dl * 0.3f; busy = true; }
+                else { a.Lift += dl * kLift; busy = true; }
             }
-            if ((DateTime.Now - appearStart).TotalMilliseconds < appearDur + appearStagger * 14) busy = true;
+            if ((now - appearStart) < appearDur + appearStagger * 14) busy = true;
             Invalidate();
-            if (!busy) anim.Stop();
+            if (!busy) StopAnim();
         }
 
         // mode:0 保持位置(排序/删除后平滑挪动)  1 快速入场  2 完整入场
@@ -4624,7 +4756,7 @@ namespace Glean
                 anims.Clear();
                 scrollX = targetX = 0;
                 scrollV = 0;
-                appearStart = DateTime.Now;
+                appearStart = Gfx.Ms;
                 appearStagger = mode == 2 ? 45 : 14;
                 appearDur = mode == 2 ? 460 : 220;
             }
@@ -5494,7 +5626,8 @@ namespace Glean
         string hint = "";
         int lookToken;
         readonly System.Windows.Forms.Timer pop = new System.Windows.Forms.Timer();
-        DateTime popStart;
+        double popStart;
+        bool popHiRes;
         int popY;
 
         public QuickLook()
@@ -5516,8 +5649,8 @@ namespace Glean
             pop.Interval = 15;
             pop.Tick += delegate
             {
-                double p = (DateTime.Now - popStart).TotalMilliseconds / 180.0;
-                if (p >= 1) { p = 1; pop.Stop(); }
+                double p = (Gfx.Ms - popStart) / 180.0;
+                if (p >= 1) { p = 1; StopPop(); }
                 double e = 1 - Math.Pow(1 - p, 3);
                 Top = popY + (int)((1 - e) * Gfx.S(12));   // 只保留轻轻上浮
             };
@@ -5598,6 +5731,7 @@ namespace Glean
                 text.Bounds = content;
                 text.Text = Regex.Replace(it.Text ?? "", "\r?\n", "\r\n");
                 text.Select(0, 0);
+                FitScrollBar();
             }
             Invalidate();
             popY = y;
@@ -5606,7 +5740,8 @@ namespace Glean
                 // 淡入 + 轻轻上浮
                 Top = y + Gfx.S(12);
                 Show();
-                popStart = DateTime.Now;
+                popStart = Gfx.Ms;
+                if (!popHiRes) { popHiRes = true; Gfx.HiRes(true); }
                 pop.Start();
             }
         }
@@ -5715,6 +5850,7 @@ namespace Glean
                     text.Bounds = content;
                     text.Text = Regex.Replace(txt, "\r?\n", "\r\n");
                     text.Select(0, 0);
+                    FitScrollBar();
                     shownText = true;
                 }
                 catch { }
@@ -5760,15 +5896,32 @@ namespace Glean
             {
                 Top = y + Gfx.S(12);
                 Show();
-                popStart = DateTime.Now;
+                popStart = Gfx.Ms;
+                if (!popHiRes) { popHiRes = true; Gfx.HiRes(true); }
                 pop.Start();
             }
+        }
+
+        // 文字放得下就不显示滚动条;要显示时跟随深浅色(不再是一根白色的系统滚动条)
+        void FitScrollBar()
+        {
+            int h = TextRenderer.MeasureText(text.Text.Length > 20000 ? text.Text.Substring(0, 20000) : text.Text, text.Font,
+                new Size(Math.Max(10, text.Width - Gfx.S(22)), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix).Height;
+            ScrollBars want = h > text.Height ? ScrollBars.Vertical : ScrollBars.None;
+            if (text.ScrollBars != want) text.ScrollBars = want;
+            Native.ThemeScrollBars(text, Theme.Cur.Dark);
+        }
+
+        void StopPop()
+        {
+            pop.Stop();
+            if (popHiRes) { popHiRes = false; Gfx.HiRes(false); }
         }
 
         public void HideLook()
         {
             lookToken++;
-            pop.Stop();
+            StopPop();
             if (Visible) Hide();
             Image old = pic.Image;
             pic.Image = null;
@@ -5797,6 +5950,12 @@ namespace Glean
     // 小输入框:新建/重命名分类、重命名卡片
     class InputDialog : Form
     {
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.DarkTitle(Handle, Theme.Cur.Dark);   // 标题栏也跟随深色
+        }
+
         readonly SearchBox box = new SearchBox();
         readonly Swatches colors = new Swatches();
 
@@ -7180,6 +7339,7 @@ namespace Glean
         // 底部(卡片模式在右上角)的小提示条:"已删除 · 撤销"
         string toastText;
         bool toastIcon;
+        bool hintsShown = true;
         Action toastUndo, toastCommit;
         Rectangle toastRect, toastBtn;
         readonly System.Windows.Forms.Timer toastTimer = new System.Windows.Forms.Timer();
@@ -7201,7 +7361,8 @@ namespace Glean
         int lastTab;
         int resizeStartY, resizeStartH;
         int slideFrom, slideTo, slideMs;
-        DateTime slideStart;
+        double slideStart;
+        bool slideHiRes;
 
         public ShelfForm(MainForm owner, History hist)
         {
@@ -7237,6 +7398,7 @@ namespace Glean
                 Reload();
             };
             tabs.RightClicked += OnTabRightClick;
+            tabs.MenuState += delegate(bool open) { menuOpen = open; };
 
             gear.MoreDots = true;   // 设置
             gear.Click += delegate { HideNow(); owner.ShowSettingsFromPopup(); };
@@ -7261,6 +7423,7 @@ namespace Glean
             folderTabs.Visible = false;
             folderTabs.Changed += delegate { OnFolderTab(); };
             folderTabs.RightClicked += OnFolderTabRightClick;
+            folderTabs.MenuState += delegate(bool open) { menuOpen = open; };
             fileView.Visible = false;
             fileView.FileOpened += OpenFile;
             fileView.SelectionChanged += delegate { if (quick.Visible) ShowFileQuick(); };
@@ -7420,7 +7583,12 @@ namespace Glean
             sb.SetBounds(Gfx.S(162), hy2, Gfx.S(230), hh2);
             gear.SetBounds(Width - Gfx.S(20) - hh2, hy2, hh2, hh2);
             int tx = sb.Right + Gfx.S(28);
-            tabs.SetBounds(tx, top + Gfx.S(2), Math.Max(Gfx.S(120), gear.Left - Gfx.S(230) - tx), Gfx.S(32));
+            // 分类标签放不下时,先把右侧的快捷键提示让出来(显示删除提示条时除外)
+            int withHints = gear.Left - Gfx.S(230) - tx, full = gear.Left - Gfx.S(20) - tx;
+            Chips active = filesMode ? folderTabs : tabs;
+            hintsShown = active.ContentWidth <= withHints;
+            int tw = (hintsShown || toastText != null) ? withHints : full;
+            tabs.SetBounds(tx, top + Gfx.S(2), Math.Max(Gfx.S(120), tw), Gfx.S(32));
             cardView.SetBounds(0, Gfx.S(60), Width, Math.Max(10, Height - Gfx.S(60) - Gfx.S(6)));
             folderTabs.Bounds = tabs.Bounds;
             fileView.Bounds = cardView.Bounds;
@@ -7714,6 +7882,7 @@ namespace Glean
             int cy = Gfx.S(14) + Gfx.S(18);
             int right = gear.Left - Gfx.S(16);
             if (toastText != null) { DrawToast(g, right, cy); return; }
+            if (!hintsShown) return;
             right = Gfx.KeyHint(g, "Enter", filesMode ? "打开" : "粘贴", right, cy);
             Gfx.KeyHint(g, "空格", "预览", right - Gfx.S(16), cy);
         }
@@ -7804,20 +7973,27 @@ namespace Glean
             slideFrom = from;
             slideTo = to;
             slideMs = ms;
-            slideStart = DateTime.Now;
+            slideStart = Gfx.Ms;
+            if (!slideHiRes) { slideHiRes = true; Gfx.HiRes(true); }
             Top = from;
             slide.Start();
         }
 
+        void StopSlide()
+        {
+            slide.Stop();
+            if (slideHiRes) { slideHiRes = false; Gfx.HiRes(false); }
+        }
+
         void OnSlide(object sender, EventArgs e)
         {
-            double p = (DateTime.Now - slideStart).TotalMilliseconds / slideMs;
+            double p = (Gfx.Ms - slideStart) / slideMs;
             if (p >= 1) p = 1;
             double ease = hiding ? p * p * p : 1 - Math.Pow(1 - p, 5);   // 弹出:先快后慢、稳稳停住;收起:加速滑走
             Top = slideFrom + (int)((slideTo - slideFrom) * ease);
             if (p >= 1)
             {
-                slide.Stop();
+                StopSlide();
                 if (hiding) { hiding = false; keyPoll.Stop(); Hide(); }
             }
         }
@@ -7836,7 +8012,7 @@ namespace Glean
         {
             CloseToast(true);
             keyPoll.Stop();
-            slide.Stop();
+            StopSlide();
             hiding = false;
             quick.HideLook();
             Hide();
@@ -8112,6 +8288,7 @@ namespace Glean
             toastCommit = commit;
             toastTimer.Stop();
             toastTimer.Start();
+            if (!listMode) OnResize(EventArgs.Empty);
             Invalidate();
         }
 
@@ -8124,6 +8301,7 @@ namespace Glean
             toastText = null;
             toastUndo = toastCommit = null;
             toastRect = toastBtn = Rectangle.Empty;
+            if (!listMode) OnResize(EventArgs.Empty);
             Invalidate();
             if (a != null) { try { a(); } catch { } }
         }
@@ -8511,6 +8689,7 @@ namespace Glean
             folderIdx = FolderStore.Items.Count == 0 ? -1 : Math.Max(0, Math.Min(FolderStore.Items.Count - 1, select));
             folderTabs.Selected = folderIdx;
             folderTabs.Invalidate();
+            if (!listMode) OnResize(EventArgs.Empty);
         }
 
         void OpenFolderTab()
@@ -8832,6 +9011,7 @@ namespace Glean
             tabs.Selected = Math.Max(0, Math.Min(labels.Count - 2, select));
             lastTab = tabs.Selected;
             tabs.Invalidate();
+            if (!listMode) OnResize(EventArgs.Empty);   // 标签多了少了:重新决定快捷键提示放不放得下
         }
 
         Board BoardAt(int tab)
@@ -9571,7 +9751,7 @@ namespace Glean
     // 只服务当前这一条内容:地址里带随机口令,窗口关掉或 10 分钟后自动停止
     static class ShareServer
     {
-        class Entry { public string Name, Path, Mime; public byte[] Bytes; public long Size; }
+        class Entry { public string Name, Path, Mime; public long Size; }
 
         static System.Net.Sockets.TcpListener listener;
         static string token;
@@ -9925,7 +10105,7 @@ namespace Glean
             int cell = Math.Max(2, Gfx.S(300) / n);
             qr = QrCode.Render(matrix, cell, Color.FromArgb(28, 26, 24), Color.White);
             int w = Math.Max(qr.Width + Gfx.S(80), Gfx.S(400));
-            ClientSize = new Size(w, Gfx.S(72) + qr.Width + Gfx.S(150));
+            ClientSize = new Size(w, Gfx.S(84) + qr.Width + Gfx.S(150));
             Btn ok = new Btn();
             ok.Text = "完成";
             ok.Primary = true;
@@ -9965,12 +10145,12 @@ namespace Glean
             Graphics g = e.Graphics;
             Theme t = Theme.Cur;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            Gfx.Text(g, "用手机扫一扫", SetPal.PageTitle, new Rectangle(Gfx.S(28), Gfx.S(18), ClientSize.Width - Gfx.S(56), Gfx.S(36)), t.Text, TextFormatFlags.Left);
-            Gfx.Text(g, title, Gfx.Small, new Rectangle(Gfx.S(28), Gfx.S(50), ClientSize.Width - Gfx.S(56), Gfx.S(20)), t.Sub,
+            Gfx.Text(g, "用手机扫一扫", SetPal.PageTitle, new Rectangle(Gfx.S(28), Gfx.S(16), ClientSize.Width - Gfx.S(56), Gfx.S(40)), t.Text, TextFormatFlags.Left);
+            Gfx.Text(g, title, Gfx.Small, new Rectangle(Gfx.S(28), Gfx.S(58), ClientSize.Width - Gfx.S(56), Gfx.S(20)), t.Sub,
                 TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
             if (qr != null)
             {
-                int x = (ClientSize.Width - qr.Width) / 2, y = Gfx.S(80);
+                int x = (ClientSize.Width - qr.Width) / 2, y = Gfx.S(92);
                 Gfx.FillRound(g, Color.White, new Rectangle(x - Gfx.S(6), y - Gfx.S(6), qr.Width + Gfx.S(12), qr.Height + Gfx.S(12)), 14);
                 g.InterpolationMode = InterpolationMode.NearestNeighbor;
                 g.DrawImageUnscaled(qr, x, y);

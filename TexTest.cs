@@ -91,8 +91,12 @@ static class TexTest
             hist.AddText("【申通快递】您的包裹 773123456789012 已到达XX驿站,请凭取件码 3-2-1056 取件");
             Glean.Item pin = hist.AddText("下午三点在 3 楼会议室开周会,记得带上本周的数据报表。\n第二行内容\n第三行内容");
             hist.TogglePin(pin);
+            string longT = ""; for (int k = 0; k < 60; k++) longT += "第 " + k + " 行:一段比较长的内容,用来看预览窗口的滚动条。\n";
+            hist.AddText(longT);
             hist.AddText("Hello Glean,这是一段比较短的文字");
             Glean.Board bd = hist.AddBoard("工作", Glean.Theme.Accents[2].ToArgb());
+            hist.AddBoard("生活", Glean.Theme.Accents[4].ToArgb());
+            hist.AddBoard("学习资料", Glean.Theme.Accents[3].ToArgb());
             hist.SetBoard(hist.Items[2], bd.Id);
 
             Glean.FolderStore.Load();
@@ -111,6 +115,27 @@ static class TexTest
                 Call(shelf, "ShowQuick"); Pump(400);
                 Form q = (Form)Get(shelf, "quick");
                 Shot(T + "-card-quicklook", q.Bounds);
+                object st0 = Get(shelf, "strip"); st0.GetType().GetProperty("Selected").SetValue(st0, 1, null);
+                Call(shelf, "ShowQuick"); Pump(400);
+                Shot(T + "-card-quicklook-long", q.Bounds);
+                st0.GetType().GetProperty("Selected").SetValue(st0, 0, null);
+                // 动画帧间隔:滚动卡片时记录每一帧的时间
+                if (theme == 2)
+                {
+                    Control cv = (Control)Get(shelf, "cardView");
+                    List<double> stamps = new List<double>();
+                    PaintEventHandler ph = delegate { stamps.Add(Glean.Gfx.Ms); };
+                    cv.Paint += ph;
+                    MethodInfo sc = cv.GetType().GetMethod("ScrollBy", new Type[] { typeof(int) });
+                    sc.Invoke(cv, new object[] { 600 });
+                    Pump(700);
+                    cv.Paint -= ph;
+                    List<double> gaps = new List<double>();
+                    for (int k = 1; k < stamps.Count; k++) gaps.Add(stamps[k] - stamps[k - 1]);
+                    gaps.Sort();
+                    if (gaps.Count > 4) Out(string.Format("FRAMES n={0} median={1:0.0}ms p90={2:0.0}ms max={3:0.0}ms", gaps.Count, gaps[gaps.Count / 2], gaps[gaps.Count * 9 / 10], gaps[gaps.Count - 1]));
+                    sc.Invoke(cv, new object[] { -600 }); Pump(500);
+                }
                 Call(shelf, "DeleteSelected"); Pump(200);
                 Shot(T + "-card-toast", shelf.Bounds);
                 Call(shelf, "UndoLast");
@@ -134,7 +159,8 @@ static class TexTest
                 Glean.SettingsSidebar side = (Glean.SettingsSidebar)Get(sf, "side");
                 for (int p = 0; p < 6; p++)
                 {
-                    if (theme == 1 && p > 1) break;
+                    if (theme == 1 && p != 0 && p != 3) continue;
+                    if (theme == 2 && p != 3) continue;
                     side.Selected = p; Call(sf, "ShowPage"); sf.Refresh();
                     Shot(T + "-settings-" + p, sf.Bounds);
                 }

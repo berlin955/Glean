@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.23.0.0")]
-[assembly: AssemblyFileVersion("0.23.0.0")]
+[assembly: AssemblyVersion("0.24.0.0")]
+[assembly: AssemblyFileVersion("0.24.0.0")]
 
 namespace Glean
 {
@@ -69,7 +69,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.23";
+        public const string Version = "0.24";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -245,6 +245,7 @@ namespace Glean
         Func<int, Point, bool> DragAbove { get; set; }
         string EmptyText { get; set; }
         int Selected { get; set; }
+        int Hovered { get; }   // 鼠标正停在哪一项上(键盘移动过选中后视为没有),-1 = 没有
         bool Visible { get; set; }
         bool Focused { get; }
         void SetItems(List<Item> list, int mode);
@@ -2833,7 +2834,10 @@ namespace Glean
             }
         }
 
-        public void Move(int delta) { Selected = (selected < 0 ? 0 : selected) + delta; }
+        public void Move(int delta) { kbdMoved = true; Selected = (selected < 0 ? 0 : selected) + delta; }
+        bool kbdMoved;
+        Point lastMouse;
+        public int Hovered { get { return kbdMoved ? -1 : hover; } }
 
         // mode 为 0 时保持滚动位置(排序、删除后);其他情况回到顶部
         public void SetItems(List<Item> list, int mode)
@@ -3012,6 +3016,7 @@ namespace Glean
                 }
             }
             int h = HitTest(e.Y);
+            if (e.Location != lastMouse) { kbdMoved = false; lastMouse = e.Location; }
             if (h != hover) { hover = h; Invalidate(); }
         }
 
@@ -4162,9 +4167,9 @@ namespace Glean
             g2.AddRow("切换剪切板 / 文件夹", null, new KeyCaps("Ctrl", "Tab"), Gfx.S(160), rh);
             g2.AddRow("直接粘贴第 1~9 条", null, new KeyCaps("Ctrl", "1~9"), Gfx.S(160), rh);
             g2.AddRow("置顶", null, new KeyCaps("Ctrl", "P"), Gfx.S(160), rh);
-            g2.AddRow("删除", null, new KeyCaps("Ctrl", "Delete"), Gfx.S(200), rh);
+            g2.AddRow("删除", null, new KeyCaps("Delete"), Gfx.S(160), rh);
             g2.AddRow("撤销刚才的删除", null, new KeyCaps("Ctrl", "Z"), Gfx.S(160), rh);
-            AddGroup(p, y, "面板里", g2, null);
+            AddGroup(p, y, "面板里", g2, "鼠标停在某张卡片上时,空格和 Delete 直接作用于那张,不用先点一下。");
         }
 
         void BuildStorage(Panel p)
@@ -4816,7 +4821,10 @@ namespace Glean
             }
         }
 
-        public void Move(int d) { Selected = (selected < 0 ? 0 : selected) + d; }
+        public void Move(int d) { kbdMoved = true; Selected = (selected < 0 ? 0 : selected) + d; }
+        bool kbdMoved;
+        Point lastMouse;
+        public int Hovered { get { return kbdMoved ? -1 : hover; } }
 
         public void ScrollBy(float px)
         {
@@ -5024,6 +5032,7 @@ namespace Glean
                 }
             }
             int h = HitTest(e.Location);
+            if (e.Location != lastMouse) { kbdMoved = false; lastMouse = e.Location; }
             if (h != hover) { hover = h; Kick(); }
         }
 
@@ -8123,7 +8132,16 @@ namespace Glean
         {
             if ((DateTime.Now - lastPreviewToggle).TotalMilliseconds < 250) return;
             lastPreviewToggle = DateTime.Now;
-            if (quick.Visible) quick.HideLook(); else if (filesMode) ShowFileQuick(); else ShowQuick();
+            if (quick.Visible) quick.HideLook();
+            else if (filesMode) ShowFileQuick();
+            else { FollowHover(); ShowQuick(); }
+        }
+
+        // 鼠标停在某张卡片上时,按键操作的就是这张(不用先点一下)
+        void FollowHover()
+        {
+            int h = strip.Hovered;
+            if (h >= 0 && h < shown.Count && h != strip.Selected) strip.Selected = h;
         }
 
         void ShowQuick()
@@ -9459,7 +9477,10 @@ namespace Glean
                 case Keys.Enter | Keys.Shift: Choose(strip.Selected, false); return true;
                 case Keys.Tab: CycleTab(1); return true;
                 case Keys.Tab | Keys.Shift: CycleTab(-1); return true;
-                case Keys.Delete | Keys.Control: DeleteSelected(); return true;
+                case Keys.Delete:
+                    if (!onCards && sb.Box.Text.Length > 0) return false;   // 搜索框里有字时,Delete 照常删字
+                    FollowHover(); DeleteSelected(); return true;
+                case Keys.Delete | Keys.Control: FollowHover(); DeleteSelected(); return true;
                 case Keys.P | Keys.Control: TogglePin(); return true;
                 case Keys.O | Keys.Control:
                     {

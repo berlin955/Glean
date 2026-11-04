@@ -25,6 +25,13 @@ static class TexTest
             }
         }
     }
+    static void Key(Form f, Keys k)
+    {
+        Message m = Message.Create(f.Handle, 0x100, (IntPtr)(int)k, IntPtr.Zero);
+        MethodInfo pk = typeof(Glean.ShelfForm).GetMethod("ProcessCmdKey", NP);
+        object[] a = new object[] { m, k };
+        Out("KEY " + k + " handled=" + pk.Invoke(f, a));
+    }
     [STAThread]
     static int Main()
     {
@@ -37,32 +44,46 @@ static class TexTest
             Application.EnableVisualStyles();
             Glean.Config.ThemeMode = 1; Glean.Config.ShelfTransparency = 0; Glean.Config.Layout = 1;
             Glean.Theme.Refresh();
-            string dir = Path.Combine(Path.GetTempPath(), "glean-hover");
+            string dir = Path.Combine(Path.GetTempPath(), "glean-keys");
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
             Directory.CreateDirectory(dir);
             Glean.History hist = new Glean.History(dir);
-            for (int i = 0; i < 6; i++) hist.AddText("卡片内容 " + i + "\n第二行");
+            for (int i = 0; i < 6; i++) hist.AddText("卡片内容 " + i);
             Glean.ShelfForm shelf = new Glean.ShelfForm(null, hist);
             shelf.ShowAt(); Pump(900);
             Control cv = (Control)typeof(Glean.ShelfForm).GetField("cardView", NP).GetValue(shelf);
+            PropertyInfo selP = cv.GetType().GetProperty("Selected");
             FieldInfo hover = cv.GetType().GetField("hover", NP);
-            MethodInfo kick = cv.GetType().GetMethod("Kick", NP);
-            FieldInfo selF = cv.GetType().GetField("selected", NP);
-            selF.SetValue(cv, 1); cv.Invalidate(); Pump(400);
-            foreach (int pct in new int[] { 0, 100, 200 })
-            {
-                Glean.Config.HoverFloat = pct;
-                shelf.Hide(); shelf.ShowAt(); Pump(900);
-                selF.SetValue(cv, 1);
-                hover.SetValue(cv, 1);
-                kick.Invoke(cv, null);
-                Pump(600);
-                Rectangle sb = Screen.PrimaryScreen.Bounds;
-                Rectangle r = new Rectangle(shelf.Left - 4, shelf.Top - 4, Math.Min(shelf.Width, Glean.Gfx.S(720)), sb.Bottom - shelf.Top + 4);
-                Out("SHELF " + shelf.Bounds + " WA " + Screen.PrimaryScreen.WorkingArea);
-                Shot("hover-" + pct, r);
-                hover.SetValue(cv, -1); kick.Invoke(cv, null); Pump(400);
-            }
+            Control quick = (Control)typeof(Glean.ShelfForm).GetField("quick", NP).GetValue(shelf);
+            cv.Focus();
+            Out("start sel=" + selP.GetValue(cv, null));
+            hover.SetValue(cv, 2);
+            Key(shelf, Keys.Space); Pump(500);
+            Out("after space sel=" + selP.GetValue(cv, null) + " quickVisible=" + quick.Visible);
+            Key(shelf, Keys.Escape); Pump(300);
+            // 键盘移动后,悬停不再生效
+            Key(shelf, Keys.Right); Pump(100);
+            Out("after right sel=" + selP.GetValue(cv, null));
+            Thread.Sleep(300);
+            Key(shelf, Keys.Space); Pump(500);
+            Out("kbd space sel=" + selP.GetValue(cv, null) + " quickVisible=" + quick.Visible);
+            Key(shelf, Keys.Escape); Pump(300);
+            // 鼠标重新移动到第 4 张,按 Delete
+            FieldInfo kb = cv.GetType().GetField("kbdMoved", NP); kb.SetValue(cv, false);
+            hover.SetValue(cv, 4);
+            int before = hist.Items.Count;
+            Key(shelf, Keys.Delete); Pump(400);
+            Out("delete count " + before + " -> " + hist.Items.Count);
+            Key(shelf, Keys.Z | Keys.Control); Pump(300);
+            Out("undo count " + hist.Items.Count);
+            shelf.Hide();
+            Glean.SettingsForm sf = new Glean.SettingsForm();
+            object side = typeof(Glean.SettingsForm).GetField("side", NP).GetValue(sf);
+            side.GetType().GetField("Selected").SetValue(side, 3);
+            typeof(Glean.SettingsForm).GetMethod("ShowPage", NP).Invoke(sf, null);
+            sf.StartPosition = FormStartPosition.Manual; sf.Location = new Point(0, 0);
+            sf.Show(); Pump(900);
+            Shot("keys", sf.Bounds);
         }
         catch (Exception ex) { Out("ERROR " + ex); }
         Out("DONE");

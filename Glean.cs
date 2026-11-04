@@ -5426,16 +5426,31 @@ namespace Glean
                     gr.Inflate(Gfx.S(3 + k * 2), Gfx.S(3 + k * 2));
                     Gfx.DrawRound(g, Color.FromArgb(t.Dark ? 26 : 22, t.Accent), gr, 17 + k * 2, Gfx.F(2.5f));
                 }
-                Rectangle rr = r;
-                rr.Inflate(Gfx.S(3), Gfx.S(3));
-                Gfx.DrawRound(g, t.Accent, rr, 17, Gfx.F(3f));
+                RingAround(g, t.Accent, r, 14, 3);
             }
             else if (hov)
+                RingAround(g, Color.FromArgb(90, t.Accent), r, 14, 1);
+            DrawCardOverlayFade(g, r, appear);
+        }
+
+        // 紧贴卡片外沿画一圈描边:内圈压进卡片边缘 1 像素,和卡片之间不会透出缝
+        static void RingAround(Graphics g, Color c, Rectangle r, int radius, int thick)
+        {
+            Rectangle outer = r; outer.Inflate(Gfx.S(thick), Gfx.S(thick));
+            Rectangle inner = r; inner.Inflate(-1, -1);
+            using (GraphicsPath po = Gfx.Round(outer, radius + thick))
+            using (GraphicsPath pi = Gfx.Round(inner, radius))
+            using (SolidBrush b = new SolidBrush(c))
             {
-                Rectangle rr = r;
-                rr.Inflate(Gfx.S(1), Gfx.S(1));
-                Gfx.DrawRound(g, Color.FromArgb(90, t.Accent), rr, 15, Gfx.F(1.5f));
+                po.AddPath(pi, false);
+                po.FillMode = FillMode.Alternate;
+                g.FillPath(b, po);
             }
+        }
+
+        void DrawCardOverlayFade(Graphics g, Rectangle r, float appear)
+        {
+            Theme t = Theme.Cur;
 
             // 入场时从背景色里淡入(毛玻璃背景下改为只做上浮,避免出现色块)
             IBackdrop pbd = Parent as IBackdrop;

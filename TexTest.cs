@@ -47,10 +47,12 @@ static class TexTest
             Control cv = (Control)typeof(Glean.ShelfForm).GetField("cardView", NP).GetValue(shelf);
             FieldInfo hover = cv.GetType().GetField("hover", NP);
             MethodInfo kick = cv.GetType().GetMethod("Kick", NP);
+            FieldInfo selF = cv.GetType().GetField("selected", NP);
+            selF.SetValue(cv, 1); cv.Invalidate(); Pump(400);
             foreach (int pct in new int[] { 0, 100, 200 })
             {
                 Glean.Config.HoverFloat = pct;
-                hover.SetValue(cv, 1);
+                hover.SetValue(cv, pct == 0 ? 2 : 1);
                 kick.Invoke(cv, null);
                 Pump(600);
                 Rectangle sb = Screen.PrimaryScreen.Bounds;

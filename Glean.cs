@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.21.0.0")]
-[assembly: AssemblyFileVersion("0.21.0.0")]
+[assembly: AssemblyVersion("0.22.0.0")]
+[assembly: AssemblyFileVersion("0.22.0.0")]
 
 namespace Glean
 {
@@ -61,6 +61,7 @@ namespace Glean
             Color.FromArgb(214, 118, 66).ToArgb()    // 文件:陶土
         };
         public static int[] TabDotColors = (int[])DefaultTabDots.Clone();
+        public static int HoverFloat = 100;        // 鼠标经过卡片时浮起的程度(%),100 = 默认(类似 macOS),0 = 不浮起
         public static int ShelfTransparency = 35;  // 卡片面板背景透明度 0~90(%),0 = 不透明
         public static int Layout = 1;              // 1 卡片(Paste 风格)  0 经典列表
         public static int ThemeMode = 0;           // 0 跟随系统  1 浅色  2 深色
@@ -68,7 +69,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.21";
+        public const string Version = "0.22";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -172,6 +173,7 @@ namespace Glean
                                         TabDotColors[idx] = int.Parse(parts[idx], CultureInfo.InvariantCulture);
                                     break;
                                 }
+                            case "hoverfloat": HoverFloat = Math.Max(0, Math.Min(200, int.Parse(v))); break;
                             case "shelftransparency": ShelfTransparency = Math.Max(0, Math.Min(90, int.Parse(v))); break;
                             case "layout": Layout = v == "0" ? 0 : 1; break;
                             case "theme": ThemeMode = Math.Max(0, Math.Min(2, int.Parse(v))); break;
@@ -212,6 +214,7 @@ namespace Glean
                     "popupcursor=" + (PopupAtCursor ? "1" : "0"),
                     "layout=" + Layout,
                     "shelftransparency=" + ShelfTransparency,
+                    "hoverfloat=" + HoverFloat,
                     "tabdots=" + string.Join(",", TabDotColors.Select(x => x.ToString(CultureInfo.InvariantCulture)).ToArray()),
                     "cardzoom=" + CardZoom.ToString("0.###", CultureInfo.InvariantCulture),
                     "headerstyle=" + HeaderMode,
@@ -3837,6 +3840,7 @@ namespace Glean
         readonly Segmented headerSeg = new Segmented();
         readonly ColorChip headerColor = new ColorChip();
         readonly Slider transSlider = new Slider();
+        readonly Slider floatSlider = new Slider();
         readonly HotkeyBox hotkey = new HotkeyBox();
         readonly Toggle tPaste = new Toggle();
         readonly Toggle tImages = new Toggle();
@@ -4079,7 +4083,12 @@ namespace Glean
             headerColor.Value = Color.FromArgb(Config.HeaderColor);
             headerColor.Height = Gfx.S(26);
             g2.AddRow("统一颜色", "标题颜色选“统一颜色”时使用", headerColor, Gfx.S(48));
-            AddGroup(p, y, "卡片", g2, null);
+            floatSlider.Minimum = 0;
+            floatSlider.Maximum = 200;
+            floatSlider.Value = Math.Max(0, Math.Min(200, Config.HoverFloat));
+            floatSlider.Suffix = "%";
+            g2.AddRow("悬停浮起", "鼠标经过卡片时浮起的程度,0% 不浮起", floatSlider, Gfx.S(260));
+            AddGroup(p, y, "卡片", g2, "100% 是默认效果(类似 macOS),调大更明显。");
         }
 
         void BuildGeneral(Panel p)
@@ -4288,6 +4297,7 @@ namespace Glean
             Config.HeaderMode = headerSeg.Selected;
             Config.ShelfTransparency = transSlider.Value;
             Config.HeaderColor = headerColor.Value.ToArgb();
+            Config.HoverFloat = floatSlider.Value;
             Config.Ctrl = hotkey.Ctrl; Config.Alt = hotkey.Alt; Config.Shift = hotkey.Shift;
             Config.Win = hotkey.Win; Config.Key = hotkey.Key;
             Config.AutoPaste = tPaste.Checked;
@@ -4329,7 +4339,7 @@ namespace Glean
         public static int FooterH { get { return Z(30); } }
         public static int BodyH { get { return CardH - HeaderH - FooterH; } }
         public static int Gap { get { return Z(16); } }
-        public static int ShelfH { get { return Gfx.S(60) + CardH + Gfx.S(40); } }
+        public static int ShelfH { get { return Gfx.S(60) + CardH + Gfx.S(48); } }
     }
 
     // 来源程序的图标和"主色"(卡片顶部色带的颜色就取自这里)
@@ -4631,7 +4641,9 @@ namespace Glean
         int TotalW { get { return items.Count == 0 ? 0 : Pad * 2 + items.Count * Step - ShelfMetrics.Gap; } }
         float MaxScroll { get { return Math.Max(0, TotalW - Width); } }
         float Clamp(float v) { return Math.Max(0f, Math.Min(MaxScroll, v)); }
-        int BaseY { get { return Gfx.S(16); } }   // 上方留足空间,浮起/拖动的卡片和选中描边都不会被裁掉
+        int BaseY { get { return Gfx.S(24); } }
+        // 悬停浮起的高度:默认 10 像素,按设置里的比例放大缩小
+        static float LiftPx { get { return Gfx.S(10) * Math.Max(0, Math.Min(200, Config.HoverFloat)) / 100f; } }   // 上方留足空间,浮起/拖动的卡片和选中描边都不会被裁掉
 
         Anim AnimOf(int i)
         {
@@ -4662,7 +4674,7 @@ namespace Glean
         Rectangle RectOf(int i)
         {
             Anim a = AnimOf(i);
-            return new Rectangle((int)(a.X - scrollX), BaseY - (int)(a.Lift * Gfx.S(6)),
+            return new Rectangle((int)(a.X - scrollX), BaseY - (int)(a.Lift * LiftPx),
                 ShelfMetrics.CardW, ShelfMetrics.CardH);
         }
 
@@ -5144,7 +5156,7 @@ namespace Glean
             r.Offset(0, (int)((1 - appear) * Gfx.S(40)));
 
             // 投影(预先画好的图,按浮起高度分几档)
-            float lift = floating ? 1f : AnimOf(i).Lift;
+            float lift = floating ? 1f : AnimOf(i).Lift * Math.Max(0, Math.Min(200, Config.HoverFloat)) / 100f;
             Bitmap shadow = ShadowFor(r.Width, r.Height, floating, lift);
             g.DrawImageUnscaled(shadow, r.X - ShadowPad, r.Y - ShadowPad);
 
@@ -5168,14 +5180,18 @@ namespace Glean
         Bitmap ShadowFor(int w, int h, bool floating, float lift)
         {
             Theme t = Theme.Cur;
-            int bucket = floating ? 9 : (int)Math.Round(Math.Max(0, Math.Min(1, lift)) * 4);
+            int bucket = floating ? 99 : (int)Math.Round(Math.Max(0, Math.Min(2, lift)) * 4);   // 0~8 档
             string key = w + "x" + h + "|" + t.Dark + "|" + bucket;
             Bitmap b;
             if (shadowCache.TryGetValue(key, out b)) return b;
-            if (shadowCache.Count > 40) shadowCache.Clear();   // 尺寸变了(缩放)就重新来
+            if (shadowCache.Count > 40)   // 尺寸变了(缩放)就重新来,旧的投影图顺手释放
+            {
+                foreach (Bitmap old in shadowCache.Values) old.Dispose();
+                shadowCache.Clear();
+            }
             int pad = ShadowPad;
             b = new Bitmap(w + pad * 2, h + pad * 2 + Gfx.S(8), PixelFormat.Format32bppPArgb);
-            float lf = floating ? 1f : bucket / 4f;
+            float lf = floating ? 1.2f : bucket / 4f;   // 浮得越高,影子越远、越散、越深
             using (Graphics g = Graphics.FromImage(b))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -5184,10 +5200,10 @@ namespace Glean
                 for (int k = layers; k >= 1; k--)
                 {
                     Rectangle sr = r;
-                    int grow = Gfx.S(k) / 2 + 1;
+                    int grow = Gfx.S(k) / 2 + 1 + (int)(lf * Gfx.S(k) / 4f);
                     sr.Inflate(grow, grow);
-                    sr.Offset(0, (int)(Gfx.S(k) * (floating ? 1.1f : 0.55f) + lf * Gfx.S(2)));
-                    int alpha = (floating ? (t.Dark ? 15 : 6) : (t.Dark ? 12 : 4)) + (int)(lf * 2);
+                    sr.Offset(0, (int)(Gfx.S(k) * (floating ? 1.1f : 0.55f) + lf * Gfx.S(3)));
+                    int alpha = (floating ? (t.Dark ? 15 : 6) : (t.Dark ? 12 : 4)) + (int)(lf * 3);
                     Gfx.FillRound(g, Color.FromArgb(alpha, 0, 0, 0), sr, 14 + k / 2);
                 }
             }

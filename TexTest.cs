@@ -53,7 +53,9 @@ static class TexTest
                 hover.SetValue(cv, 1);
                 kick.Invoke(cv, null);
                 Pump(600);
-                Rectangle r = cv.RectangleToScreen(new Rectangle(0, 0, Math.Min(cv.Width, Glean.Gfx.S(720)), cv.Height));
+                Rectangle sb = Screen.PrimaryScreen.Bounds;
+                Rectangle r = new Rectangle(shelf.Left - 4, shelf.Top - 4, Math.Min(shelf.Width, Glean.Gfx.S(720)), sb.Bottom - shelf.Top + 4);
+                Out("SHELF " + shelf.Bounds + " WA " + Screen.PrimaryScreen.WorkingArea);
                 Shot("hover-" + pct, r);
                 hover.SetValue(cv, -1); kick.Invoke(cv, null); Pump(400);
             }

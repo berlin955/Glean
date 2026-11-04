@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.22.0.0")]
-[assembly: AssemblyFileVersion("0.22.0.0")]
+[assembly: AssemblyVersion("0.23.0.0")]
+[assembly: AssemblyFileVersion("0.23.0.0")]
 
 namespace Glean
 {
@@ -69,7 +69,7 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.22";
+        public const string Version = "0.23";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -4339,7 +4339,8 @@ namespace Glean
         public static int FooterH { get { return Z(30); } }
         public static int BodyH { get { return CardH - HeaderH - FooterH; } }
         public static int Gap { get { return Z(16); } }
-        public static int ShelfH { get { return Gfx.S(60) + CardH + Gfx.S(48); } }
+        // 顶部 60(搜索栏)+ 24(给浮起留的空间)+ 卡片 + 底部 18(投影和滚动条)
+        public static int ShelfH { get { return Gfx.S(60) + Gfx.S(24) + CardH + Gfx.S(18); } }
     }
 
     // 来源程序的图标和"主色"(卡片顶部色带的颜色就取自这里)
@@ -5076,7 +5077,7 @@ namespace Glean
             {
                 int tw = Math.Max(Gfx.S(40), (int)((long)Width * Width / TotalW));
                 int tx = (int)(scrollX / MaxScroll * (Width - tw));
-                Gfx.FillRound(g, t.Border, new Rectangle(tx, Height - Gfx.S(6), tw, Gfx.S(3)), 2);
+                Gfx.FillRound(g, t.Border, new Rectangle(tx, Height - Gfx.S(5), tw, Gfx.S(3)), 2);
             }
         }
 
@@ -7605,7 +7606,7 @@ namespace Glean
             hintsShown = active.ContentWidth <= withHints;
             int tw = (hintsShown || toastText != null) ? withHints : full;
             tabs.SetBounds(tx, top + Gfx.S(2), Math.Max(Gfx.S(120), tw), Gfx.S(32));
-            cardView.SetBounds(0, Gfx.S(60), Width, Math.Max(10, Height - Gfx.S(60) - Gfx.S(6)));
+            cardView.SetBounds(0, Gfx.S(60), Width, Math.Max(10, Height - Gfx.S(60) - Gfx.S(3)));
             folderTabs.Bounds = tabs.Bounds;
             fileView.Bounds = cardView.Bounds;
         }
@@ -7965,13 +7966,13 @@ namespace Glean
 
             Screen scr = Screen.FromPoint(Cursor.Position);
             Rectangle wa = scr.WorkingArea;
-            int m = Gfx.S(12);
+            int m = Gfx.S(8), mb = Gfx.S(6);   // 左右留 8,离任务栏 6
             int h = ShelfMetrics.ShelfH;
             hiding = false;
             // 弹出前先拍下面板将要覆盖的那块屏幕,做成毛玻璃背景(往上多拍一些,放大卡片时也够用)
-            int maxH = Gfx.S(100) + Gfx.S((int)Math.Round(236 * 1.6));
-            int capTop = Math.Max(scr.Bounds.Top, wa.Bottom - m - maxH);
-            BuildBackdrop(new Rectangle(wa.Left + m, capTop, wa.Width - 2 * m, wa.Bottom - m - capTop));
+            int maxH = Gfx.S(110) + Gfx.S((int)Math.Round(236 * 1.6));
+            int capTop = Math.Max(scr.Bounds.Top, wa.Bottom - mb - maxH);
+            BuildBackdrop(new Rectangle(wa.Left + m, capTop, wa.Width - 2 * m, wa.Bottom - mb - capTop));
             Perf.Mark("glass");
             SetBounds(wa.Left + m, scr.Bounds.Bottom, wa.Width - 2 * m, h);
             Show();
@@ -7981,7 +7982,7 @@ namespace Glean
             if (filesMode) fileView.Focus(); else strip.Focus();
             spaceDown = (Native.GetAsyncKeyState(0x20) & 0x8000) != 0;
             keyPoll.Start();
-            StartSlide(scr.Bounds.Bottom, wa.Bottom - h - m, 480);
+            StartSlide(scr.Bounds.Bottom, wa.Bottom - h - mb, 480);
         }
 
         void StartSlide(int from, int to, int ms)

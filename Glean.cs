@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.30.0.0")]
-[assembly: AssemblyFileVersion("0.30.0.0")]
+[assembly: AssemblyVersion("0.29.0.0")]
+[assembly: AssemblyFileVersion("0.29.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,7 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.30";
+        public const string Version = "0.29";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -13054,14 +13054,14 @@ namespace Glean
 
     class TimelineView : Control
     {
-        class Row { public Reminder R; public Rectangle Rect, Ring, More, DoneBtn; public string Group; }
+        class Row { public Reminder R; public Rectangle Rect, Ring, More; public string Group; }
 
         // 滚动时整块往上平移画:文字也要跟着平移、跟着裁剪(TextRenderer 默认不管这些)
         const TextFormatFlags Keep = TextFormatFlags.PreserveGraphicsTranslateTransform | TextFormatFlags.PreserveGraphicsClipping;
         readonly List<Row> rows = new List<Row>();
         readonly List<KeyValuePair<int, string>> headers = new List<KeyValuePair<int, string>>();
         int scroll, contentH;
-        Row hoverRow;
+        Reminder hoverR;   // 按提醒本身记住悬停的是哪一条(每次重画行对象都会重建)
         int hoverPart;   // 0 行  1 圆环(完成)  2 更多
         readonly System.Windows.Forms.Timer clock = new System.Windows.Forms.Timer();
 
@@ -13119,10 +13119,7 @@ namespace Glean
                     row.Rect = new Rectangle(x, y, w, RowH);
                     int rs = Gfx.S(40);
                     row.Ring = new Rectangle(row.Rect.Right - Gfx.S(18) - rs, row.Rect.Y + (RowH - rs) / 2, rs, rs);
-                    // 悬停时右边出现"完成"按钮(已完成的是"恢复"),左边是"⋯"
-                    int bw = Gfx.S(78), bh = Gfx.S(32);
-                    row.DoneBtn = new Rectangle(row.Rect.Right - Gfx.S(16) - bw, row.Rect.Y + (RowH - bh) / 2, bw, bh);
-                    row.More = new Rectangle(row.DoneBtn.X - Gfx.S(6) - Gfx.S(30), row.Rect.Y + (RowH - Gfx.S(30)) / 2, Gfx.S(30), Gfx.S(30));
+                    row.More = new Rectangle(row.Ring.X - Gfx.S(36), row.Rect.Y + (RowH - Gfx.S(28)) / 2, Gfx.S(28), Gfx.S(28));
                     rows.Add(row);
                     y += RowH + Gfx.S(10);
                 }
@@ -13199,7 +13196,7 @@ namespace Glean
             Theme t = Theme.Cur;
             Reminder r = row.R;
             Rectangle rc = row.Rect;
-            bool hov = row == hoverRow;
+            bool hov = row.R == hoverR;
             Color card = SetPal.Card;
             if (hov) card = Theme.Blend(card, t.Text, t.Dark ? 0.04 : 0.02);
             Gfx.FillRound(g, card, rc, 14);
@@ -13219,7 +13216,8 @@ namespace Glean
             using (Pen sep = new Pen(SetPal.Sep)) g.DrawLine(sep, dc.Right + Gfx.S(6), rc.Y + Gfx.S(18), dc.Right + Gfx.S(6), rc.Bottom - Gfx.S(18));
 
             int tx = dc.Right + Gfx.S(20);
-            int tr = (hov ? row.More.X : row.Ring.X) - Gfx.S(10);
+            int tr = (hov && !r.Done ? row.More.X : row.Ring.X) - Gfx.S(10);
+            if (hov && r.Done) tr = row.More.X - Gfx.S(10);
             string head = r.DateLine + "  ·  " + r.Label;
             TextRenderer.DrawText(g, head, Gfx.Bold, new Rectangle(tx, rc.Y + Gfx.S(12), tr - tx, Gfx.S(22)), textC, card,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
@@ -13232,38 +13230,27 @@ namespace Glean
             TextRenderer.DrawText(g, meta, Gfx.Small, new Rectangle(tx, rc.Y + Gfx.S(58), tr - tx, Gfx.S(20)), t.Sub, card,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
 
-            // 右边:平时是倒计时圆环(只看不点);鼠标移到这一条上,换成明确的"完成"按钮
+            // 右边:倒计时圆环;鼠标移上去变成"完成"的勾
             Rectangle ring = row.Ring;
-            if (hov)
+            bool ringHot = hov && hoverPart == 1;
+            if (r.Done)
             {
-                Rectangle db = row.DoneBtn;
-                bool hot = hoverPart == 1;
-                Color green = Color.FromArgb(52, 168, 98);
-                Color fill = r.Done ? (hot ? t.Border : t.Input) : (hot ? Theme.Blend(green, Color.Black, 0.08) : green);
-                Gfx.FillRound(g, fill, db, 99);
-                Color ink = r.Done ? t.Text : Color.White;
-                string label = r.Done ? "恢复" : "完成";
-                int lw = TextRenderer.MeasureText(label, Gfx.UI, Size.Empty, TextFormatFlags.NoPadding).Width;
-                int iw = r.Done ? 0 : Gfx.S(14) + Gfx.S(5);
-                int lx = db.X + (db.Width - lw - iw) / 2;
-                if (!r.Done) Check(g, new Rectangle(lx - Gfx.S(3), db.Y + (db.Height - Gfx.S(20)) / 2, Gfx.S(20), Gfx.S(20)), ink);
-                TextRenderer.DrawText(g, label, Gfx.UI, new Rectangle(lx + iw, db.Y, lw + Gfx.S(4), db.Height), ink, fill,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | Keep);
-            }
-            else if (r.Done)
-            {
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(52, 168, 98))) g.FillEllipse(b, Shrink(ring, Gfx.S(6)));
+                using (SolidBrush b = new SolidBrush(ringHot ? Theme.Blend(t.Sub, card, 0.5) : Color.FromArgb(52, 168, 98))) g.FillEllipse(b, Shrink(ring, Gfx.S(6)));
                 Check(g, Shrink(ring, Gfx.S(6)), Color.White);
+            }
+            else if (ringHot)
+            {
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(52, 168, 98))) g.FillEllipse(b, ring);
+                Check(g, ring, Color.White);
             }
             else
             {
-                Color urgR = Timeline.Urgency(r.Due);
                 double total = Math.Max(1, (r.Due - r.Created).TotalMinutes);
                 double left = Math.Max(0, (r.Due - DateTime.Now).TotalMinutes);
                 float frac = (float)Math.Max(0.02, Math.Min(1, left / total));
                 Rectangle rr = Shrink(ring, Gfx.S(2));
                 using (Pen bg = new Pen(Color.FromArgb(t.Dark ? 50 : 30, t.Text), Gfx.F(3.2f))) g.DrawEllipse(bg, rr);
-                using (Pen fg = new Pen(urgR, Gfx.F(3.2f)))
+                using (Pen fg = new Pen(urg, Gfx.F(3.2f)))
                 {
                     fg.StartCap = fg.EndCap = LineCap.Round;
                     g.DrawArc(fg, rr, -90, 360 * frac);
@@ -13300,7 +13287,8 @@ namespace Glean
             foreach (Row r in rows)
             {
                 if (!r.Rect.Contains(q)) continue;
-                if (r.DoneBtn.Contains(q)) part = 1;
+                Rectangle ring = r.Ring; ring.Inflate(Gfx.S(4), Gfx.S(4));
+                if (ring.Contains(q)) part = 1;
                 else if (r.More.Contains(q)) part = 2;
                 return r;
             }
@@ -13312,14 +13300,15 @@ namespace Glean
             base.OnMouseMove(e);
             int part;
             Row r = HitRow(e.Location, out part);
-            if (r != hoverRow || part != hoverPart) { hoverRow = r; hoverPart = part; Invalidate(); }
+            Reminder hr = r != null ? r.R : null;
+            if (hr != hoverR || part != hoverPart) { hoverR = hr; hoverPart = part; Invalidate(); }
             Cursor = r != null && part > 0 ? Cursors.Hand : Cursors.Default;
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            hoverRow = null;
+            hoverR = null;
             Invalidate();
         }
 

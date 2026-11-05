@@ -97,15 +97,15 @@ static class TexTest
                 tw.Location = new Point(20, 20); Pump(300);
                 Control view = tw.Controls[0];
                 System.Collections.IList rows = (System.Collections.IList)view.GetType().GetField("rows", NP).GetValue(view);
-                view.GetType().GetField("hoverRow", NP).SetValue(view, rows[1]);
+                view.GetType().GetField("hoverR", NP).SetValue(view, Glean.Timeline.Items[1]);
                 view.GetType().GetField("hoverPart", NP).SetValue(view, 0);
                 view.Invalidate(); Pump(300);
                 Shot("hover-" + mode, tw.Bounds);
-                view.GetType().GetField("hoverRow", NP).SetValue(view, rows[2]);
+                view.GetType().GetField("hoverR", NP).SetValue(view, Glean.Timeline.Items[2]);
                 view.GetType().GetField("hoverPart", NP).SetValue(view, 1);
                 view.Invalidate(); Pump(300);
                 Shot("hoverbtn-" + mode, tw.Bounds);
-                view.GetType().GetField("hoverRow", NP).SetValue(view, rows[3]);
+                view.GetType().GetField("hoverR", NP).SetValue(view, Glean.Timeline.Items[3]);
                 view.GetType().GetField("hoverPart", NP).SetValue(view, 0);
                 view.Invalidate(); Pump(300);
                 Shot("hoverdone-" + mode, tw.Bounds);

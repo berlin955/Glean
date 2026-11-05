@@ -94,17 +94,21 @@ static class TexTest
             long paint = sw.ElapsedMilliseconds;
             Out("[" + mode + "] ShowAt " + showAt + " ms, first paint done at " + paint + " ms; marks: " + string.Join(", ", Glean.Perf.Log.ToArray()));
             Glean.Perf.Log.Clear();
-            // 统计滑出过程中界面卡住的最长一次
+            // 统计滑出过程中界面卡住的情况:记录每一次超过 25ms 的停顿发生在第几毫秒、面板当时在哪
             long worst = 0, last = sw.ElapsedMilliseconds;
+            string stalls = "";
+            int screenH = Screen.PrimaryScreen.Bounds.Bottom;
             while (sw.ElapsedMilliseconds < paint + 900)
             {
+                int topBefore = shelf.Top;
                 Application.DoEvents();
                 long now = sw.ElapsedMilliseconds;
+                if (now - last > 25) stalls += " [at " + (last - paint) + "ms +" + (now - last) + "ms top " + (screenH - topBefore) + "->" + (screenH - shelf.Top) + "]";
                 worst = Math.Max(worst, now - last);
                 last = now;
                 Thread.Sleep(1);
             }
-            Out("[" + mode + "] worst UI stall during slide " + worst + " ms");
+            Out("[" + mode + "] worst UI stall during slide " + worst + " ms;" + stalls);
             shelf.HideNow();
             Pump(300);
             sw.Restart();

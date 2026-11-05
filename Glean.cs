@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.27.0.0")]
-[assembly: AssemblyFileVersion("0.27.0.0")]
+[assembly: AssemblyVersion("0.28.0.0")]
+[assembly: AssemblyFileVersion("0.28.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,7 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.27";
+        public const string Version = "0.28";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -13017,6 +13017,8 @@ namespace Glean
     {
         class Row { public Reminder R; public Rectangle Rect, Ring, More; public string Group; }
 
+        // 滚动时整块往上平移画:文字也要跟着平移、跟着裁剪(TextRenderer 默认不管这些)
+        const TextFormatFlags Keep = TextFormatFlags.PreserveGraphicsTranslateTransform | TextFormatFlags.PreserveGraphicsClipping;
         readonly List<Row> rows = new List<Row>();
         readonly List<KeyValuePair<int, string>> headers = new List<KeyValuePair<int, string>>();
         int scroll, contentH;
@@ -13107,7 +13109,7 @@ namespace Glean
             {
                 bool warn = h.Value.StartsWith("已过期") || h.Value.StartsWith("今天");
                 TextRenderer.DrawText(g, h.Value, SetPal.Header, new Rectangle(Gfx.S(26), h.Key + Gfx.S(4), Width - Gfx.S(52), Gfx.S(22)),
-                    warn ? Timeline.Red : t.Sub, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    warn ? Timeline.Red : t.Sub, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
             }
             foreach (Row row in rows)
             {
@@ -13118,9 +13120,9 @@ namespace Glean
 
             // 顶部
             using (SolidBrush b = new SolidBrush(SetPal.Back)) g.FillRectangle(b, 0, 0, Width, TopH - Gfx.S(6));
-            TextRenderer.DrawText(g, "时光轴", SetPal.PageTitle, new Point(Gfx.S(22), Gfx.S(18)), t.Text, TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, "时光轴", SetPal.PageTitle, new Point(Gfx.S(22), Gfx.S(18)), t.Text, TextFormatFlags.NoPrefix | Keep);
             string sub = active == 0 ? "没有进行中的提醒" : active + " 个进行中" + (soon > 0 ? "  ·  " + soon + " 个三天内到期" : "");
-            TextRenderer.DrawText(g, sub, Gfx.Small, new Point(Gfx.S(26), Gfx.S(58)), t.Sub, TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, sub, Gfx.Small, new Point(Gfx.S(26), Gfx.S(58)), t.Sub, TextFormatFlags.NoPrefix | Keep);
             if (scroll > 0)
                 using (Pen p = new Pen(SetPal.Sep)) g.DrawLine(p, 0, TopH - Gfx.S(7), Width, TopH - Gfx.S(7));
 
@@ -13144,10 +13146,10 @@ namespace Glean
             Gfx.DrawGlow(g, glow, t.Accent, Gfx.S(40));
             Timeline.DrawCalendar(g, new Rectangle(cx - Gfx.S(28), cy - Gfx.S(28), Gfx.S(56), Gfx.S(56)), DateTime.Today.Day, t.Accent);
             TextRenderer.DrawText(g, "还没有提醒", Gfx.HeaderFont, new Rectangle(0, cy + Gfx.S(44), Width, Gfx.S(26)), t.Text,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | Keep);
             TextRenderer.DrawText(g, "复制带有到期日期的文字时,拾光会问你要不要提醒;\n也可以点右上角的“新建”,或在剪切板卡片上右键 → 加入时光轴。", Gfx.Small,
                 new Rectangle(Gfx.S(30), cy + Gfx.S(76), Width - Gfx.S(60), Gfx.S(44)), t.Sub,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | Keep);
         }
 
         void DrawRow(Graphics g, Row row)
@@ -13166,9 +13168,9 @@ namespace Glean
             // 日期块
             Rectangle dc = new Rectangle(rc.X + Gfx.S(8), rc.Y, Gfx.S(70), rc.Height);
             TextRenderer.DrawText(g, r.Due.Day.ToString(CultureInfo.InvariantCulture), Timeline.DayFont, new Rectangle(dc.X, dc.Y + Gfx.S(12), dc.Width, Gfx.S(40)),
-                r.Done ? t.Sub : urg, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            TextRenderer.DrawText(g, r.Due.Month + "月 · " + DueDate.Week(r.Due), Gfx.Small, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(54), dc.Width + Gfx.S(8), Gfx.S(18)),
-                t.Sub, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                r.Done ? t.Sub : urg, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
+            TextRenderer.DrawText(g, r.Due.Year != DateTime.Today.Year ? r.Due.Year + "年" + r.Due.Month + "月" : r.Due.Month + "月 · " + DueDate.Week(r.Due), Gfx.Small, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(54), dc.Width + Gfx.S(8), Gfx.S(18)),
+                t.Sub, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
             using (Pen sep = new Pen(SetPal.Sep)) g.DrawLine(sep, dc.Right + Gfx.S(6), rc.Y + Gfx.S(18), dc.Right + Gfx.S(6), rc.Bottom - Gfx.S(18));
 
             int tx = dc.Right + Gfx.S(20);
@@ -13177,15 +13179,15 @@ namespace Glean
             string head = r.Done ? "已完成 · " + DueDate.Md(r.Due) + " " + r.Label : r.Headline;
             if (r.HasTime && !r.Done) head += "  " + r.Due.ToString("HH:mm", CultureInfo.InvariantCulture);
             TextRenderer.DrawText(g, head, Gfx.Bold, new Rectangle(tx, rc.Y + Gfx.S(12), tr - tx, Gfx.S(22)), textC, card,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             TextRenderer.DrawText(g, r.Snippet(90), Gfx.UI, new Rectangle(tx, rc.Y + Gfx.S(34), tr - tx, Gfx.S(22)), r.Done ? t.Sub : Theme.Blend(t.Text, t.Sub, 0.35), card,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             string meta = r.Done ? (r.DoneAt.Year > 2000 ? "完成于 " + DueDate.Describe(r.DoneAt, true) : "")
                 : (r.Notified && r.At <= DateTime.Now ? "已提醒" : "提醒:" + DueDate.Describe(r.At, true) + " " + DueDate.Week(r.At));
             string extra = !string.IsNullOrEmpty(r.Note) ? "备注:" + r.Note : r.App;
             if (!string.IsNullOrEmpty(extra)) meta += (meta.Length > 0 ? "  ·  " : "") + extra;
             TextRenderer.DrawText(g, meta, Gfx.Small, new Rectangle(tx, rc.Y + Gfx.S(58), tr - tx, Gfx.S(20)), t.Sub, card,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
 
             // 右边:倒计时圆环;鼠标移上去变成"完成"的勾
             Rectangle ring = row.Ring;
@@ -13215,7 +13217,7 @@ namespace Glean
                 int n = r.DaysLeft;
                 string inner = n > 0 ? n.ToString(CultureInfo.InvariantCulture) : (n == 0 ? "今" : "!");
                 TextRenderer.DrawText(g, inner, Timeline.RingFont, ring, n <= 0 ? Timeline.Red : t.Text, card,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.NoPadding);
             }
             if (hov)
             {

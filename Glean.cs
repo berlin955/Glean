@@ -13311,7 +13311,7 @@ namespace Glean
                 Rectangle cr = new Rectangle(right - cw, rc.Y + (rc.Height - Gfx.S(24)) / 2, cw, Gfx.S(24));
                 row.Chip = cr;
                 Gfx.FillRound(g, bg, cr, 99);
-                TextRenderer.DrawText(g, chip, ChipFont, cr, fg, Theme.Blend(card, fg, bg.A / 255.0),
+                TextRenderer.DrawText(g, chip, ChipFont, cr, fg, bg.A == 255 ? bg : Theme.Blend(card, fg, bg.A / 255.0),
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | Keep);
                 right = cr.X - Gfx.S(12);
             }

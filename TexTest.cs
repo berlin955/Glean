@@ -83,78 +83,83 @@ static class TexTest
             Case("一共 3/4 的人同意", "null");
 
             Glean.Config.ThemeMode = 1; Glean.Config.ShelfTransparency = 0; Glean.Config.Layout = 1;
-            Glean.Config.TimelineOn = true;
+            Out("default on " + Glean.Config.TimelineOn);
             Glean.Theme.Refresh();
+            foreach (string n in Glean.Chimes.Builtin)
+            {
+                if (n == "系统提示") continue;
+                byte[] w = (byte[])typeof(Glean.Chimes).GetMethod("Synth", NP).Invoke(null, new object[] { n });
+                Out("chime " + n + " bytes " + w.Length);
+                File.WriteAllBytes("chime-" + n + ".wav", w);
+                string b64 = Convert.ToBase64String(w);
+                for (int k = 0, part = 0; k < b64.Length; k += 6000, part++)
+                    Out("WAVPART " + n + " " + part.ToString("000") + " " + b64.Substring(k, Math.Min(6000, b64.Length - k)));
+            }
+            Glean.Chimes.Play("水晶", null); Pump(300);
+            string tf = Path.Combine(Glean.Config.DefaultDir, "timeline.txt");
+            if (File.Exists(tf)) File.Delete(tf);
+            typeof(Glean.Timeline).GetField("loaded", NP).SetValue(null, true);
+            Glean.Timeline.Items.Clear();
+            Glean.Reminder a1 = R("物业费缴纳截止,逾期将产生滞纳金", 0, 0, "缴费", false, false); a1.Note = "交到物业前台"; Glean.Timeline.Items.Add(a1);
+            Glean.Timeline.Items.Add(R("信用卡账单 ¥3,280.00 最后还款日", 2, 1, "还款", false, false));
+            Glean.Timeline.Save();
+            // 保存再读回,备注还在
+            Glean.Timeline.Items.Clear(); typeof(Glean.Timeline).GetField("loaded", NP).SetValue(null, false); Glean.Timeline.Load();
+            Out("reload count " + Glean.Timeline.Items.Count + " note=" + Glean.Timeline.Items[0].Note);
+
             string dir = Path.Combine(Path.GetTempPath(), "glean-tl");
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
             Directory.CreateDirectory(dir);
-            string tf = Path.Combine(Glean.Config.DefaultDir, "timeline.txt");
-            if (File.Exists(tf)) File.Delete(tf);
-
-            // 带日期的卡片
             Glean.History hist = new Glean.History(dir);
             hist.AddText("普通的一段文字");
-            hist.AddText("信用卡还款日：" + DateTime.Today.AddDays(2).Month + "月" + DateTime.Today.AddDays(2).Day + "日，记得还款");
-            hist.AddText("您的域名 example.com 将于 " + DateTime.Today.AddDays(16).ToString("yyyy-MM-dd") + " 到期，请及时续费");
             Glean.ShelfForm shelf = new Glean.ShelfForm(null, hist);
             shelf.ShowAt(); Pump(1200);
             Rectangle sr = shelf.Bounds;
-            Shot("cards", new Rectangle(sr.X, sr.Y, Math.Min(sr.Width, Glean.Gfx.S(820)), sr.Height));
+            Shot("shelf-top", new Rectangle(sr.Right - Glean.Gfx.S(700), sr.Y, Glean.Gfx.S(700), Glean.Gfx.S(70)));
+            shelf.Hide(); Pump(300);
+            Glean.Config.Layout = 0; Glean.Config.PopupAtCursor = false;
+            shelf.ShowAt(); Pump(1200);
+            sr = shelf.Bounds;
+            Shot("list-top", new Rectangle(sr.X, sr.Y, sr.Width, Glean.Gfx.S(110)));
             shelf.Hide(); Pump(300);
 
-            foreach (int mode in new int[] { 1, 2 })
-            {
-                Glean.Config.ThemeMode = mode; Glean.Theme.Refresh();
-                Glean.DueDate.Hit h = Glean.DueDate.Find("您的域名 example.com 将于 " + DateTime.Today.AddDays(15).ToString("yyyy年M月d日") + "到期，请及时续费");
-                Out("hit " + (h != null));
-                Glean.Capsule.Ask("您的域名 example.com 将于 " + DateTime.Today.AddDays(15).ToString("yyyy年M月d日") + "到期，请及时续费", "Chrome", h);
-                Pump(700);
-                Form cap = null;
-                foreach (Form f in Application.OpenForms) if (f is Glean.Capsule) cap = f;
-                Out("capsule " + (cap != null ? cap.Bounds.ToString() : "none"));
-                Rectangle cr = cap.Bounds; cr.Inflate(20, 20);
-                Shot("capsule-" + mode, cr);
-                // 点主按钮:模拟设好后的样子
-                MethodInfo commit = typeof(Glean.Capsule).GetMethod("Commit", NP);
-                commit.Invoke(cap, new object[] { DateTime.Today.AddDays(14).AddHours(9) });
-                Pump(300);
-                Shot("capsule-done-" + mode, cr);
-                cap.Close(); Pump(200);
-
-                Glean.Reminder ar = R("信用卡账单 ¥3,280.00 最后还款日为明天，请按时还款，避免产生逾期费用。", 1, 0, "还款", false, false);
-                Glean.AlertCard a = new Glean.AlertCard(ar);
-                a.Popup(0); Pump(700);
-                Rectangle ab = a.Bounds; ab.Inflate(10, 10);
-                Shot("alert-" + mode, ab);
-                a.Close(); Pump(200);
-            }
-
-            Glean.Config.ThemeMode = 1; Glean.Theme.Refresh();
-            Glean.Timeline.Items.Clear();
-            typeof(Glean.Timeline).GetField("loaded", NP).SetValue(null, true);
-            Glean.Timeline.Items.Add(R("物业费缴纳截止,逾期将产生滞纳金", -1, -2, "缴费", false, false));
-            Glean.Timeline.Items.Add(R("项目周会,准备上周数据和下周计划", 0, 0, "会议", false, true));
-            Glean.Timeline.Items.Add(R("信用卡账单 ¥3,280.00 最后还款日", 1, 0, "还款", false, false));
-            Glean.Timeline.Items.Add(R("您的域名 example.com 将于该日到期,请及时续费", 16, 15, "到期", false, false));
-            Glean.Timeline.Items.Add(R("年度体检预约,空腹前往", 40, 39, "体检", false, false));
-            Glean.Timeline.Items.Add(R("提交季度报销单据", -3, -4, "截止", true, false));
             Glean.Timeline.Open(); Pump(800);
             Form tw = null;
             foreach (Form f in Application.OpenForms) if (f is Glean.TimelineForm) tw = f;
             tw.Location = new Point(20, 20); Pump(400);
             Shot("timeline", tw.Bounds);
-            Glean.Timeline.Items.Clear();
-            tw.Invalidate(true); Pump(300);
-            Shot("timeline-empty", tw.Bounds);
+
+            foreach (int mode in new int[] { 1, 2 })
+            {
+                Glean.Config.ThemeMode = mode; Glean.Theme.Refresh();
+                Form ed = (Form)Activator.CreateInstance(typeof(Glean.ReminderEditor), NP, null, new object[] { mode == 1 ? null : Glean.Timeline.Items[0], null }, null);
+                ed.StartPosition = FormStartPosition.Manual; ed.Location = new Point(560, 20);
+                ed.Show(); Pump(700);
+                Shot("editor-" + mode, ed.Bounds);
+                if (mode == 1)
+                {
+                    TextBox tb = (TextBox)typeof(Glean.ReminderEditor).GetField("content", NP).GetValue(ed);
+                    tb.Text = "给妈妈买生日礼物";
+                    typeof(Glean.ReminderEditor).GetMethod("Save", NP).Invoke(ed, null);
+                    Pump(300);
+                    Out("after new count " + Glean.Timeline.Items.Count);
+                    tw.Invalidate(true); Pump(300);
+                    Shot("timeline2", tw.Bounds);
+                }
+                else ed.Close();
+            }
             tw.Close();
+            Glean.Config.ThemeMode = 1; Glean.Theme.Refresh();
 
             Glean.SettingsForm sf = new Glean.SettingsForm();
             object side = typeof(Glean.SettingsForm).GetField("side", NP).GetValue(sf);
-            side.GetType().GetField("Selected").SetValue(side, 5);
+            side.GetType().GetField("Selected").SetValue(side, 2);
             typeof(Glean.SettingsForm).GetMethod("ShowPage", NP).Invoke(sf, null);
             sf.StartPosition = FormStartPosition.Manual; sf.Location = new Point(0, 0);
             sf.Show(); Pump(900);
             Shot("settings", sf.Bounds);
+            typeof(Glean.SettingsForm).GetMethod("ChimeMenu", NP).Invoke(sf, null); Pump(500);
+            Shot("settings-menu", sf.Bounds);
         }
         catch (Exception ex) { Out("ERROR " + ex); }
         Out("DONE");

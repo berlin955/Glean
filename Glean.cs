@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.30.0.0")]
-[assembly: AssemblyFileVersion("0.30.0.0")]
+[assembly: AssemblyVersion("0.31.0.0")]
+[assembly: AssemblyFileVersion("0.31.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,7 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.30";
+        public const string Version = "0.31";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -2831,7 +2831,12 @@ namespace Glean
         {
             try
             {
-                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(Invalidate));
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(delegate
+                {
+                    // 面板正在滑出时先不重画(等停稳再一起刷新),免得滑到一半顿一下
+                    if (ShelfForm.Sliding) { ShelfForm.PendingRepaint = true; return; }
+                    Invalidate();
+                }));
             }
             catch { }
         }
@@ -4778,7 +4783,12 @@ namespace Glean
         {
             try
             {
-                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(Invalidate));
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(delegate
+                {
+                    // 面板正在滑出时先不重画(等停稳再一起刷新),免得滑到一半顿一下
+                    if (ShelfForm.Sliding) { ShelfForm.PendingRepaint = true; return; }
+                    Invalidate();
+                }));
             }
             catch { }
         }
@@ -8217,12 +8227,22 @@ namespace Glean
             slideStart = Gfx.Ms;
             if (!slideHiRes) { slideHiRes = true; Gfx.HiRes(true); }
             Top = from;
+            Sliding = true;
             slide.Start();
         }
+
+        public static bool Sliding, PendingRepaint;
 
         void StopSlide()
         {
             slide.Stop();
+            Sliding = false;
+            if (PendingRepaint)
+            {
+                PendingRepaint = false;
+                cardView.Invalidate();
+                listView.Invalidate();
+            }
             if (slideHiRes) { slideHiRes = false; Gfx.HiRes(false); }
         }
 

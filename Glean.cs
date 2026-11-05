@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.26.0.0")]
-[assembly: AssemblyFileVersion("0.26.0.0")]
+[assembly: AssemblyVersion("0.27.0.0")]
+[assembly: AssemblyFileVersion("0.27.0.0")]
 
 namespace Glean
 {
@@ -69,12 +69,13 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public static bool TimelineOn = false;     // 时光轴(到期提醒),默认关闭
+        public static bool TimelineOn = true;      // 时光轴(到期提醒)
         public static int TimelineAsk = 0;         // 识别到日期时:0 弹出询问  1 只在卡片上标记
         public static int LeadDays = 1;            // 默认提前:0 当天  1 一天  3 三天
         public static int RemindHour = 9;          // 提醒的钟点
-        public static bool TimelineSound = true;   // 提醒时响一声
-        public const string Version = "0.26";
+        public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
+        public static string ChimeFile = "";       // 自定义提示音文件
+        public const string Version = "0.27";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -186,11 +187,12 @@ namespace Glean
                             case "datadir": DataDir = v; break;
                             case "ignore": IgnoreApps = v; break;
                             case "keepdays": KeepDays = Math.Max(0, int.Parse(v)); break;
-                            case "timeline": TimelineOn = v == "1"; break;
+                            case "timelineon": TimelineOn = v == "1"; break;
                             case "timelineask": TimelineAsk = v == "1" ? 1 : 0; break;
                             case "leaddays": LeadDays = v == "0" ? 0 : v == "3" ? 3 : 1; break;
                             case "remindhour": RemindHour = Math.Max(0, Math.Min(23, int.Parse(v))); break;
-                            case "timelinesound": TimelineSound = v == "1"; break;
+                            case "chime": Chime = v; break;
+                            case "chimefile": ChimeFile = v; break;
                         }
                     }
                     catch { }
@@ -234,11 +236,12 @@ namespace Glean
                     "datadir=" + DataDir,
                     "ignore=" + IgnoreApps,
                     "keepdays=" + KeepDays,
-                    "timeline=" + (TimelineOn ? "1" : "0"),
+                    "timelineon=" + (TimelineOn ? "1" : "0"),
                     "timelineask=" + TimelineAsk,
                     "leaddays=" + LeadDays,
                     "remindhour=" + RemindHour,
-                    "timelinesound=" + (TimelineSound ? "1" : "0")
+                    "chime=" + Chime,
+                    "chimefile=" + ChimeFile
                 };
                 File.WriteAllLines(SettingsFile, lines, new UTF8Encoding(false));
             }
@@ -2503,6 +2506,8 @@ namespace Glean
     {
         public string Glyph = "";
         public bool MoreDots;     // 画成三个点
+        public bool Clock;        // 画成小时钟(时光轴入口)
+        public Color Badge = Color.Empty;   // 右上角的小圆点(有快到期的提醒时)
         bool hover;
 
         public IconButton()
@@ -2526,6 +2531,28 @@ namespace Glean
                 int x0 = (Width - d * 3 - gap * 2) / 2, y0 = (Height - d) / 2;
                 using (SolidBrush b = new SolidBrush(hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45)))
                     for (int k = 0; k < 3; k++) g.FillEllipse(b, x0 + k * (d + gap), y0, d, d);
+                return;
+            }
+            if (Clock)
+            {
+                // 细线小时钟:和"⋯"按钮同样的灰度,悬停时变深
+                Color c = hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45);
+                float sz = Gfx.F(15f);
+                RectangleF r = new RectangleF((Width - sz) / 2f, (Height - sz) / 2f, sz, sz);
+                using (Pen p = new Pen(c, Gfx.F(1.5f)))
+                {
+                    p.StartCap = p.EndCap = LineCap.Round;
+                    g.DrawEllipse(p, r);
+                    float cx = r.X + sz / 2f, cy = r.Y + sz / 2f;
+                    g.DrawLine(p, cx, cy, cx, cy - sz * 0.28f);
+                    g.DrawLine(p, cx, cy, cx + sz * 0.22f, cy + sz * 0.12f);
+                }
+                if (Badge != Color.Empty)
+                {
+                    float d = Gfx.F(7f);
+                    RectangleF br = new RectangleF(r.Right - d * 0.55f, r.Y - d * 0.35f, d, d);
+                    using (SolidBrush b = new SolidBrush(Badge)) g.FillEllipse(b, br);
+                }
                 return;
             }
             Gfx.Text(g, Glyph, Gfx.Symbol, new Rectangle(0, 0, Width, Height),
@@ -3875,7 +3902,8 @@ namespace Glean
         readonly Segmented daysSeg = new Segmented();
         readonly SearchBox ignoreBox = new SearchBox();
         readonly Toggle tTimeline = new Toggle();
-        readonly Toggle tTimeSound = new Toggle();
+        readonly Btn chimeBtn = new Btn();
+        string chimeName = Config.Chime, chimeFile = Config.ChimeFile;
         readonly Segmented askSeg = new Segmented();
         readonly Segmented leadSeg = new Segmented();
         readonly Segmented hourSeg = new Segmented();
@@ -3901,10 +3929,10 @@ namespace Glean
 
             side.Add("外观", "", Color.FromArgb(0, 122, 255));
             side.Add("面板", "", Color.FromArgb(48, 176, 199));
+            side.Add("时光轴", "\uE823", Color.FromArgb(255, 94, 87));
             side.Add("常规", "", Color.FromArgb(142, 142, 147));
             side.Add("快捷键", "", Color.FromArgb(255, 149, 0));
             side.Add("存储与隐私", "", Color.FromArgb(52, 199, 89));
-            side.Add("时光轴", "\uE823", Color.FromArgb(255, 94, 87));
             side.Add("关于", "", Color.FromArgb(88, 86, 214));
             side.SetBounds(0, 0, Gfx.S(SideW), ClientSize.Height);
             side.Changed += delegate { ShowPage(); };
@@ -3921,10 +3949,10 @@ namespace Glean
 
             BuildLook(pages[0]);
             BuildPanel(pages[1]);
-            BuildGeneral(pages[2]);
-            BuildKeys(pages[3]);
-            BuildStorage(pages[4]);
-            BuildTimeline(pages[5]);
+            BuildTimeline(pages[2]);
+            BuildGeneral(pages[3]);
+            BuildKeys(pages[4]);
+            BuildStorage(pages[5]);
             BuildAbout(pages[6]);
 
             // 切换浅色 / 深色 / 主题色时,设置窗口立刻换成对应的样子
@@ -4258,13 +4286,71 @@ namespace Glean
             SettingsGroup g2 = new SettingsGroup();
             g2.AddRow("默认提前", null, Seg(leadSeg, new string[] { "当天", "提前 1 天", "提前 3 天" }, ClosestIndex(LeadOptions, Config.LeadDays)), Gfx.S(250));
             g2.AddRow("提醒时间", null, Seg(hourSeg, new string[] { "8:00", "9:00", "10:00", "20:00" }, ClosestIndex(HourOptions, Config.RemindHour)), Gfx.S(250));
-            g2.AddRow("提示音", null, Switch(tTimeSound, Config.TimelineSound), Gfx.S(52));
+            // 提示音:点名字选(选中就会响一下),右边可以再听一次
+            Panel snd = new Panel();
+            snd.BackColor = SetPal.Card;
+            Btn play = new Btn();
+            play.Text = "▶  试听";
+            chimeBtn.Text = Chimes.Display(chimeName, chimeFile) + "   ▾";
+            chimeBtn.Click += delegate { ChimeMenu(); };
+            play.Click += delegate { Chimes.Play(chimeName, chimeFile); };
+            snd.Controls.Add(chimeBtn);
+            snd.Controls.Add(play);
+            snd.Height = Gfx.S(32);
+            snd.Resize += delegate
+            {
+                int pw = Gfx.S(78), gap = Gfx.S(8);
+                play.SetBounds(snd.Width - pw, 0, pw, snd.Height);
+                chimeBtn.SetBounds(0, 0, play.Left - gap, snd.Height);
+            };
+            g2.AddRow("提示音", null, snd, Gfx.S(250));
             Btn open = new Btn();
             open.Text = "打开";
             open.Height = Gfx.S(30);
             open.Click += delegate { Timeline.Open(); };
             g2.AddRow("时光轴窗口", "查看、完成或修改所有提醒;也可以从托盘菜单打开", open, Gfx.S(80));
             AddGroup(p, y, "提醒", g2, "提醒只保存在这台电脑上;拾光在后台运行时才能准时提醒,全屏看视频、玩游戏时会等你退出全屏再弹出。");
+        }
+
+        void ChimeMenu()
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            foreach (string n in Chimes.Builtin)
+            {
+                string pick = n;
+                ToolStripMenuItem mi = new ToolStripMenuItem(n, null, delegate { SetChime(pick, chimeFile); Chimes.Play(pick, null); });
+                mi.Checked = chimeName == n;
+                m.Items.Add(mi);
+            }
+            m.Items.Add(new ToolStripSeparator());
+            ToolStripMenuItem custom = new ToolStripMenuItem(chimeName == "自定义" && chimeFile.Length > 0
+                ? "自定义:" + System.IO.Path.GetFileName(chimeFile) : "自定义…");
+            custom.Checked = chimeName == "自定义";
+            custom.Click += delegate
+            {
+                using (OpenFileDialog d = new OpenFileDialog())
+                {
+                    d.Title = "选择提示音";
+                    d.Filter = "声音文件 (*.wav;*.mp3;*.wma)|*.wav;*.mp3;*.wma|所有文件|*.*";
+                    if (d.ShowDialog(this) != DialogResult.OK) return;
+                    SetChime("自定义", d.FileName);
+                    Chimes.Play("自定义", d.FileName);
+                }
+            };
+            m.Items.Add(custom);
+            ToolStripMenuItem mute = new ToolStripMenuItem("无声", null, delegate { SetChime("无声", chimeFile); });
+            mute.Checked = chimeName == "无声";
+            m.Items.Add(mute);
+            Theme.StyleMenu(m);
+            m.Show(chimeBtn, new Point(0, chimeBtn.Height + Gfx.S(4)));
+        }
+
+        void SetChime(string name, string file)
+        {
+            chimeName = name;
+            chimeFile = file ?? "";
+            chimeBtn.Text = Chimes.Display(chimeName, chimeFile) + "   ▾";
+            chimeBtn.Invalidate();
         }
 
         void BuildAbout(Panel p)
@@ -4362,7 +4448,8 @@ namespace Glean
             Config.TimelineAsk = askSeg.Selected;
             Config.LeadDays = LeadOptions[leadSeg.Selected];
             Config.RemindHour = HourOptions[hourSeg.Selected];
-            Config.TimelineSound = tTimeSound.Checked;
+            Config.Chime = chimeName;
+            Config.ChimeFile = chimeFile;
             Config.DataDir = Util.SamePath(dir, Config.DefaultDir) ? "" : dir;
             MoveExisting = tMove.Checked;
             Config.Save();
@@ -7441,6 +7528,7 @@ namespace Glean
         readonly SearchBox sb = new SearchBox();
         readonly Chips tabs = new Chips();
         readonly IconButton gear = new IconButton();
+        readonly IconButton timeBtn = new IconButton();   // 时光轴入口(设置按钮左边)
         readonly CardStrip cardView = new CardStrip();
         readonly ItemList listView = new ItemList();
         IClipView strip;     // 当前在用的视图:卡片或列表
@@ -7513,6 +7601,8 @@ namespace Glean
 
             gear.MoreDots = true;   // 设置
             gear.Click += delegate { HideNow(); owner.ShowSettingsFromPopup(); };
+            timeBtn.Clock = true;
+            timeBtn.Click += delegate { HideNow(); Timeline.Open(); };
 
             Wire(cardView);
             Wire(listView);
@@ -7520,6 +7610,7 @@ namespace Glean
             Controls.Add(sb);
             Controls.Add(tabs);
             Controls.Add(gear);
+            Controls.Add(timeBtn);
             Controls.Add(cardView);
             Controls.Add(listView);
             listView.Visible = false;
@@ -7677,6 +7768,7 @@ namespace Glean
                 modeSwitch.SetBounds(pad, hy, Gfx.S(124), hh);
                 int rightX = Width - pad - hh;
                 gear.SetBounds(rightX, hy, hh, hh);
+                if (timeShown) { rightX -= hh + Gfx.S(2); timeBtn.SetBounds(rightX, hy, hh, hh); }
                 int sm = Gfx.S(28);
                 if (pinBtn.Visible) { rightX -= sm + Gfx.S(2); pinBtn.SetBounds(rightX, hy + (hh - sm) / 2, sm, sm); }
                 if (minBtn.Visible) { rightX -= sm + Gfx.S(2); minBtn.SetBounds(rightX, hy + (hh - sm) / 2, sm, sm); }
@@ -7693,9 +7785,11 @@ namespace Glean
             modeSwitch.SetBounds(Gfx.S(20), hy2, Gfx.S(132), hh2);
             sb.SetBounds(Gfx.S(162), hy2, Gfx.S(230), hh2);
             gear.SetBounds(Width - Gfx.S(20) - hh2, hy2, hh2, hh2);
+            timeBtn.SetBounds(gear.Left - Gfx.S(2) - hh2, hy2, hh2, hh2);
             int tx = sb.Right + Gfx.S(28);
             // 分类标签放不下时,先把右侧的快捷键提示让出来(显示删除提示条时除外)
-            int withHints = gear.Left - Gfx.S(230) - tx, full = gear.Left - Gfx.S(20) - tx;
+            int edge = RightEdge;
+            int withHints = edge - Gfx.S(230) - tx, full = edge - Gfx.S(20) - tx;
             Chips active = filesMode ? folderTabs : tabs;
             hintsShown = active.ContentWidth <= withHints;
             int tw = (hintsShown || toastText != null) ? withHints : full;
@@ -7704,6 +7798,31 @@ namespace Glean
             cardView.SetBounds(0, cvTop, Width, Math.Max(10, Height - cvTop - Gfx.S(3)));
             folderTabs.Bounds = tabs.Bounds;
             fileView.Bounds = cardView.Bounds;
+        }
+
+        bool timeShown = true;   // 不用 timeBtn.Visible:面板隐藏时它总是 false
+        int RightEdge { get { return timeShown ? timeBtn.Left : gear.Left; } }
+
+        // 时光轴入口:开着才显示;今天 / 已过期有没完成的,右上角点个红点,三天内的点琥珀色
+        void UpdateTimeBtn()
+        {
+            if (timeShown != Config.TimelineOn)
+            {
+                timeShown = Config.TimelineOn;
+                timeBtn.Visible = timeShown;
+                OnResize(EventArgs.Empty);
+            }
+            Color badge = Color.Empty;
+            if (Config.TimelineOn)
+            {
+                Timeline.Load();
+                int soonest = int.MaxValue;
+                foreach (Reminder r in Timeline.Items) if (!r.Done) soonest = Math.Min(soonest, r.DaysLeft);
+                if (soonest <= 0) badge = Timeline.Red;
+                else if (soonest <= 3) badge = Timeline.Amber;
+            }
+            timeBtn.Badge = badge;
+            timeBtn.Invalidate();
         }
 
         public bool HasBackdrop
@@ -7959,6 +8078,7 @@ namespace Glean
             sb.ApplyTheme();
             tabs.Invalidate();
             gear.Invalidate();
+            UpdateTimeBtn();
             strip.Invalidate();
             modeSwitch.Invalidate();
             folderTabs.Invalidate();
@@ -7992,7 +8112,7 @@ namespace Glean
             // 右上角:快捷键提示(键帽样式)
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int cy = Gfx.S(14) + Gfx.S(18);
-            int right = gear.Left - Gfx.S(16);
+            int right = RightEdge - Gfx.S(16);
             if (toastText != null) { DrawToast(g, right, cy); return; }
             if (!hintsShown) return;
             right = Gfx.KeyHint(g, "Enter", filesMode ? "打开" : "粘贴", right, cy);
@@ -11728,7 +11848,7 @@ namespace Glean
         public string Id = Guid.NewGuid().ToString("N").Substring(0, 12);
         public DateTime Due, At, Created = DateTime.Now, DoneAt;
         public bool HasTime, Done, Notified;
-        public string Label = "到期", Text = "", App = "";
+        public string Label = "到期", Text = "", App = "", Note = "";
 
         public int DaysLeft { get { return (int)(Due.Date - DateTime.Today).TotalDays; } }
 
@@ -11759,7 +11879,7 @@ namespace Glean
             {
                 Id, Due.Ticks.ToString(CultureInfo.InvariantCulture), HasTime ? "1" : "0", At.Ticks.ToString(CultureInfo.InvariantCulture),
                 B64(Label), B64(Text), B64(App), Done ? "1" : "0", Notified ? "1" : "0",
-                Created.Ticks.ToString(CultureInfo.InvariantCulture), DoneAt.Ticks.ToString(CultureInfo.InvariantCulture)
+                Created.Ticks.ToString(CultureInfo.InvariantCulture), DoneAt.Ticks.ToString(CultureInfo.InvariantCulture), B64(Note)
             });
         }
 
@@ -11779,6 +11899,7 @@ namespace Glean
             r.Notified = p[8] == "1";
             r.Created = new DateTime(long.Parse(p[9], CultureInfo.InvariantCulture));
             r.DoneAt = new DateTime(long.Parse(p[10], CultureInfo.InvariantCulture));
+            if (p.Length > 11) r.Note = UnB64(p[11]);
             return r;
         }
     }
@@ -11940,7 +12061,7 @@ namespace Glean
                 sound = true;
             }
             Save();
-            if (sound && Config.TimelineSound) { try { System.Media.SystemSounds.Asterisk.Play(); } catch { } }
+            if (sound) Chimes.Play(Config.Chime, Config.ChimeFile);
         }
 
         static void Restack()
@@ -12583,8 +12704,9 @@ namespace Glean
             Button(g, done, "完成", true, delegate { Timeline.Complete(r, true); Dismiss(); });
             Rectangle later = new Rectangle(done.X - Gfx.S(8) - Gfx.S(84), by, Gfx.S(84), Gfx.S(32));
             Button(g, later, "稍后  ▾", false, delegate { LaterMenu(later); });
-            if (!string.IsNullOrEmpty(r.App))
-                Timeline.Txt(g, "来自 " + r.App, Gfx.Small, new RectangleF(c.X + Gfx.S(20), by, later.X - c.X - Gfx.S(28), Gfx.S(32)), t.Sub,
+            string foot = !string.IsNullOrEmpty(r.Note) ? "备注:" + r.Note : !string.IsNullOrEmpty(r.App) ? "来自 " + r.App : null;
+            if (foot != null)
+                Timeline.Txt(g, foot, Gfx.Small, new RectangleF(c.X + Gfx.S(20), by, later.X - c.X - Gfx.S(28), Gfx.S(32)), t.Sub,
                     StringAlignment.Near, StringAlignment.Center, false);
         }
 
@@ -12596,10 +12718,185 @@ namespace Glean
         }
     }
 
+    // 日期 / 时间选择框:圆角输入框的样子,左右箭头一格一格调,滚轮也能调,点中间弹出常用选项
+    class StepField : Control
+    {
+        public DateTime Value = DateTime.Today;
+        public bool TimeMode;          // true = 选钟点
+        public bool AllDay;            // 钟点框:不设具体时间
+        public bool AllowAllDay = true;
+        public event EventHandler Changed;
+        int hover;   // 1 左箭头  2 中间  3 右箭头
+
+        public StepField()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            Height = Gfx.S(36);
+            Cursor = Cursors.Hand;
+        }
+
+        Rectangle LeftR { get { return new Rectangle(0, 0, Gfx.S(34), Height); } }
+        Rectangle RightR { get { return new Rectangle(Width - Gfx.S(34), 0, Gfx.S(34), Height); } }
+
+        public string Display
+        {
+            get
+            {
+                if (TimeMode) return AllDay ? "全天" : Value.ToString("HH:mm", CultureInfo.InvariantCulture);
+                int n = (int)(Value.Date - DateTime.Today).TotalDays;
+                string rel = n == 0 ? "今天" : n == 1 ? "明天" : n == 2 ? "后天" : n > 0 && n < 7 ? n + " 天后" : null;
+                string s = (Value.Year != DateTime.Today.Year ? Value.Year + "年" : "") + Value.Month + "月" + Value.Day + "日  " + DueDate.Week(Value);
+                return rel != null ? s + "  ·  " + rel : s;
+            }
+        }
+
+        void Set(DateTime v, bool allDay)
+        {
+            if (!TimeMode && v.Date < DateTime.Today) v = DateTime.Today;
+            Value = v;
+            AllDay = allDay && AllowAllDay;
+            Invalidate();
+            if (Changed != null) Changed(this, EventArgs.Empty);
+        }
+
+        void Step(int d)
+        {
+            if (TimeMode)
+            {
+                if (AllDay) { Set(DateTime.Today.AddHours(Config.RemindHour), false); return; }
+                DateTime t = DateTime.Today.Add(Value.TimeOfDay).AddMinutes(30 * d);
+                Set(DateTime.Today.Add(t.TimeOfDay), false);   // 23:30 再往后就回到 0:00
+            }
+            else Set(Value.AddDays(d), false);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Theme t = Theme.Cur;
+            g.Clear(Parent != null ? Parent.BackColor : t.Bg);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+            Gfx.FillRound(g, hover == 2 ? Theme.Blend(t.Input, t.Text, 0.04) : t.Input, r, 10);
+            if (Focused) Gfx.DrawRound(g, Color.FromArgb(120, t.Accent), r, 10, Gfx.F(1.5f));
+            Chevron(g, LeftR, -1, hover == 1);
+            Chevron(g, RightR, 1, hover == 3);
+            Gfx.Text(g, Display, Gfx.UI, new Rectangle(LeftR.Right, 0, RightR.X - LeftR.Right, Height),
+                TimeMode && AllDay ? t.Sub : t.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.SingleLine);
+        }
+
+        void Chevron(Graphics g, Rectangle r, int dir, bool hot)
+        {
+            Theme t = Theme.Cur;
+            if (hot) Gfx.FillRound(g, Theme.Blend(t.Input, t.Text, 0.08), new Rectangle(r.X + Gfx.S(4), r.Y + Gfx.S(4), r.Width - Gfx.S(8), r.Height - Gfx.S(8)), 7);
+            float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f, k = Gfx.F(4f);
+            using (Pen p = new Pen(hot ? t.Text : t.Sub, Gfx.F(1.6f)))
+            {
+                p.StartCap = p.EndCap = LineCap.Round;
+                p.LineJoin = LineJoin.Round;
+                g.DrawLines(p, new PointF[] { new PointF(cx - dir * k * 0.5f, cy - k), new PointF(cx + dir * k * 0.5f, cy), new PointF(cx - dir * k * 0.5f, cy + k) });
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int h = LeftR.Contains(e.Location) ? 1 : RightR.Contains(e.Location) ? 3 : 2;
+            if (h != hover) { hover = h; Invalidate(); }
+        }
+
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = 0; Invalidate(); }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            Focus();
+            if (e.Button != MouseButtons.Left) return;
+            if (LeftR.Contains(e.Location)) Step(-1);
+            else if (RightR.Contains(e.Location)) Step(1);
+            else ShowMenu();
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            Step(e.Delta > 0 ? -1 : 1);
+        }
+
+        protected override bool IsInputKey(Keys k) { return k == Keys.Left || k == Keys.Right || k == Keys.Up || k == Keys.Down || base.IsInputKey(k); }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Down) Step(-1);
+            else if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Up) Step(1);
+        }
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+        void ShowMenu()
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            DateTime today = DateTime.Today;
+            if (TimeMode)
+            {
+                if (AllowAllDay)
+                {
+                    ToolStripMenuItem all = new ToolStripMenuItem("全天(不设具体时间)", null, delegate { Set(Value, true); });
+                    all.Checked = AllDay;
+                    m.Items.Add(all);
+                    m.Items.Add(new ToolStripSeparator());
+                }
+                foreach (int h in new int[] { 8, 9, 10, 12, 14, 15, 17, 18, 20, 21 })
+                {
+                    int hh = h;
+                    ToolStripMenuItem mi = new ToolStripMenuItem(h.ToString("00") + ":00", null, delegate { Set(today.AddHours(hh), false); });
+                    mi.Checked = !AllDay && Value.Hour == h && Value.Minute == 0;
+                    m.Items.Add(mi);
+                }
+            }
+            else
+            {
+                int toFri = ((int)DayOfWeek.Friday - (int)today.DayOfWeek + 7) % 7;
+                int toMon = ((int)DayOfWeek.Monday - (int)today.DayOfWeek + 7) % 7;
+                if (toMon == 0) toMon = 7;
+                AddDay(m, "今天", today);
+                AddDay(m, "明天", today.AddDays(1));
+                AddDay(m, "后天", today.AddDays(2));
+                if (toFri > 2) AddDay(m, "本周五", today.AddDays(toFri));
+                AddDay(m, "下周一", today.AddDays(toMon));
+                AddDay(m, "一周后", today.AddDays(7));
+                AddDay(m, "一个月后", today.AddMonths(1));
+                m.Items.Add(new ToolStripSeparator());
+                // 日历:直接嵌在下拉菜单里
+                MonthCalendar cal = new MonthCalendar();
+                cal.MaxSelectionCount = 1;
+                cal.MinDate = today;
+                cal.SetDate(Value.Date < today ? today : Value.Date);
+                cal.DateSelected += delegate(object s, DateRangeEventArgs ev) { Set(ev.Start.Date.Add(Value.TimeOfDay), false); m.Close(); };
+                ToolStripControlHost host = new ToolStripControlHost(cal);
+                host.Margin = new Padding(Gfx.S(6), Gfx.S(2), Gfx.S(6), Gfx.S(2));
+                m.Items.Add(host);
+            }
+            Theme.StyleMenu(m);
+            m.Show(this, new Point(0, Height + Gfx.S(4)));
+        }
+
+        void AddDay(ContextMenuStrip m, string text, DateTime d)
+        {
+            ToolStripMenuItem mi = new ToolStripMenuItem(text + "    " + d.Month + "月" + d.Day + "日 " + DueDate.Week(d), null, delegate { Set(d.Add(Value.TimeOfDay), false); });
+            mi.Checked = Value.Date == d;
+            m.Items.Add(mi);
+        }
+    }
+
     // 选一个日期和时间
     class PickTimeForm : Form
     {
-        readonly DateTimePicker pick = new DateTimePicker();
+        readonly StepField dateF = new StepField();
+        readonly StepField timeF = new StepField();
         public DateTime Value;
 
         public PickTimeForm(string title, DateTime initial)
@@ -12613,7 +12910,7 @@ namespace Glean
             TopMost = true;
             BackColor = SetPal.Back;
             Font = Gfx.UI;
-            ClientSize = new Size(Gfx.S(360), Gfx.S(170));
+            ClientSize = new Size(Gfx.S(400), Gfx.S(176));
             Label l = new Label();
             l.Text = title;
             l.Font = Gfx.HeaderFont;
@@ -12621,21 +12918,24 @@ namespace Glean
             l.AutoSize = true;
             l.Location = new Point(Gfx.S(24), Gfx.S(20));
             Controls.Add(l);
-            pick.Format = DateTimePickerFormat.Custom;
-            pick.CustomFormat = "yyyy 年 M 月 d 日   HH:mm";
-            pick.ShowUpDown = false;
-            pick.Font = Gfx.Input;
-            pick.MinDate = DateTime.Today;
-            pick.Value = initial < DateTime.Now ? DateTime.Now.AddHours(1) : initial;
-            pick.SetBounds(Gfx.S(24), Gfx.S(58), ClientSize.Width - Gfx.S(48), Gfx.S(32));
-            Controls.Add(pick);
+            DateTime v0 = initial < DateTime.Now ? DateTime.Now.AddHours(1) : initial;
+            v0 = v0.Date.AddMinutes(Math.Ceiling(v0.TimeOfDay.TotalMinutes / 30.0) * 30);
+            int fw = ClientSize.Width - Gfx.S(48);
+            dateF.Value = v0.Date;
+            dateF.SetBounds(Gfx.S(24), Gfx.S(60), fw - Gfx.S(130), Gfx.S(36));
+            timeF.TimeMode = true;
+            timeF.AllowAllDay = false;
+            timeF.Value = DateTime.Today.Add(v0.TimeOfDay);
+            timeF.SetBounds(dateF.Right + Gfx.S(10), Gfx.S(60), Gfx.S(120), Gfx.S(36));
+            Controls.Add(dateF);
+            Controls.Add(timeF);
             Btn ok = new Btn();
             ok.Text = "确定";
             ok.Primary = true;
             ok.SetBounds(ClientSize.Width - Gfx.S(24 + 88), ClientSize.Height - Gfx.S(52), Gfx.S(88), Gfx.S(34));
             ok.Click += delegate
             {
-                Value = pick.Value;
+                Value = dateF.Value.Date.Add(timeF.Value.TimeOfDay);
                 if (Value <= DateTime.Now) Value = DateTime.Now.AddMinutes(1);
                 DialogResult = DialogResult.OK;
                 Close();
@@ -12678,7 +12978,16 @@ namespace Glean
             MinimumSize = new Size(Gfx.S(440), Gfx.S(420));
             ClientSize = new Size(Gfx.S(520), Gfx.S(640));
             view.Dock = DockStyle.Fill;
+            view.BackColor = SetPal.Back;
             Controls.Add(view);
+            Btn add = new Btn();
+            add.Text = "+  新建";
+            add.Primary = true;
+            add.Size = new Size(Gfx.S(92), Gfx.S(34));
+            add.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            add.Location = new Point(view.Width - Gfx.S(22) - add.Width, Gfx.S(26));
+            add.Click += delegate { ReminderEditor.Edit(this, null, null); };
+            view.Controls.Add(add);
             Timeline.Changed += OnChanged;
             Activated += delegate { view.Invalidate(); };
         }
@@ -12836,7 +13145,7 @@ namespace Glean
             Timeline.DrawCalendar(g, new Rectangle(cx - Gfx.S(28), cy - Gfx.S(28), Gfx.S(56), Gfx.S(56)), DateTime.Today.Day, t.Accent);
             TextRenderer.DrawText(g, "还没有提醒", Gfx.HeaderFont, new Rectangle(0, cy + Gfx.S(44), Width, Gfx.S(26)), t.Text,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
-            TextRenderer.DrawText(g, "复制带有到期日期的文字时,拾光会问你要不要提醒;\n也可以在剪切板卡片上右键 → 加入时光轴。", Gfx.Small,
+            TextRenderer.DrawText(g, "复制带有到期日期的文字时,拾光会问你要不要提醒;\n也可以点右上角的“新建”,或在剪切板卡片上右键 → 加入时光轴。", Gfx.Small,
                 new Rectangle(Gfx.S(30), cy + Gfx.S(76), Width - Gfx.S(60), Gfx.S(44)), t.Sub,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
         }
@@ -12873,7 +13182,8 @@ namespace Glean
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             string meta = r.Done ? (r.DoneAt.Year > 2000 ? "完成于 " + DueDate.Describe(r.DoneAt, true) : "")
                 : (r.Notified && r.At <= DateTime.Now ? "已提醒" : "提醒:" + DueDate.Describe(r.At, true) + " " + DueDate.Week(r.At));
-            if (!string.IsNullOrEmpty(r.App)) meta += (meta.Length > 0 ? "  ·  " : "") + r.App;
+            string extra = !string.IsNullOrEmpty(r.Note) ? "备注:" + r.Note : r.App;
+            if (!string.IsNullOrEmpty(extra)) meta += (meta.Length > 0 ? "  ·  " : "") + extra;
             TextRenderer.DrawText(g, meta, Gfx.Small, new Rectangle(tx, rc.Y + Gfx.S(58), tr - tx, Gfx.S(20)), t.Sub, card,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
 
@@ -12977,6 +13287,7 @@ namespace Glean
             if (row == null) return;
             Reminder r = row.R;
             if (e.Button == MouseButtons.Left && part == 1) { Timeline.Complete(r, !r.Done); return; }
+            if (e.Button == MouseButtons.Left && part == 0 && !r.Done) { ReminderEditor.Edit(FindForm(), r, null); return; }
             Menu(r, e.Location);
         }
 
@@ -12987,6 +13298,7 @@ namespace Glean
             else
             {
                 m.Items.Add("标记完成", null, delegate { Timeline.Complete(r, true); });
+                m.Items.Add("编辑…", null, delegate { ReminderEditor.Edit(FindForm(), r, null); });
                 ToolStripMenuItem when = new ToolStripMenuItem("修改提醒时间");
                 Timeline.FillChoicesMenu(when.DropDownItems, r, delegate(DateTime v) { Timeline.Reschedule(r, v); });
                 m.Items.Add(when);
@@ -12996,6 +13308,291 @@ namespace Glean
             m.Items.Add("删除", null, delegate { Timeline.Remove(r); });
             Theme.StyleMenu(m);
             m.Show(this, at);
+        }
+    }
+
+    // 提示音:几种内置的(现场合成,不依赖系统里有没有声音文件)+ 系统提示音 + 自定义文件
+    static class Chimes
+    {
+        public static readonly string[] Builtin = new string[] { "水晶", "风铃", "木琴", "柔和", "系统提示" };
+        static readonly Dictionary<string, byte[]> cache = new Dictionary<string, byte[]>();
+        static System.Media.SoundPlayer player;
+
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)] static extern int mciSendString(string cmd, StringBuilder ret, int len, IntPtr cb);
+
+        public static string Display(string name, string file)
+        {
+            if (name == "自定义") return string.IsNullOrEmpty(file) ? "自定义" : System.IO.Path.GetFileNameWithoutExtension(file);
+            return string.IsNullOrEmpty(name) ? "水晶" : name;
+        }
+
+        public static void Play(string name, string file)
+        {
+            try
+            {
+                if (name == "无声") return;
+                if (name == "系统提示") { System.Media.SystemSounds.Asterisk.Play(); return; }
+                if (name == "自定义")
+                {
+                    if (string.IsNullOrEmpty(file) || !File.Exists(file)) { Play("水晶", null); return; }
+                    // mp3 / wav / wma 都能放
+                    mciSendString("close glean_chime", null, 0, IntPtr.Zero);
+                    if (mciSendString("open \"" + file + "\" type mpegvideo alias glean_chime", null, 0, IntPtr.Zero) == 0)
+                        mciSendString("play glean_chime", null, 0, IntPtr.Zero);
+                    return;
+                }
+                byte[] wav;
+                if (!cache.TryGetValue(name, out wav))
+                {
+                    wav = Synth(name);
+                    if (wav == null) wav = Synth("水晶");
+                    cache[name] = wav;
+                }
+                if (player != null) { try { player.Stop(); player.Dispose(); } catch { } }
+                player = new System.Media.SoundPlayer(new MemoryStream(wav));
+                player.Play();
+            }
+            catch { }
+        }
+
+        // 每个音:频率、开始时间(秒)、衰减(秒)、音量
+        static byte[] Synth(string name)
+        {
+            double[][] notes;
+            double[][] partials;   // 泛音:倍数、音量
+            double attack = 0.004, len, gain = 0.6;
+            switch (name)
+            {
+                case "水晶":
+                    notes = new double[][] { new double[] { 1318.5, 0, 0.32, 1 }, new double[] { 1975.5, 0.11, 0.55, 0.85 } };
+                    partials = new double[][] { new double[] { 1, 1 }, new double[] { 2.0, 0.22 }, new double[] { 3.01, 0.07 } };
+                    len = 1.2; break;
+                case "风铃":
+                    notes = new double[][] { new double[] { 1046.5, 0, 0.8, 0.8 }, new double[] { 1318.5, 0.09, 0.8, 0.75 },
+                                             new double[] { 1568.0, 0.18, 0.8, 0.7 }, new double[] { 2093.0, 0.27, 1.0, 0.65 } };
+                    partials = new double[][] { new double[] { 1, 1 }, new double[] { 2.76, 0.3 }, new double[] { 5.4, 0.1 } };
+                    len = 1.7; gain = 0.5; break;
+                case "木琴":
+                    notes = new double[][] { new double[] { 880, 0, 0.2, 1 }, new double[] { 1318.5, 0.13, 0.26, 0.9 } };
+                    partials = new double[][] { new double[] { 1, 1 }, new double[] { 4.0, 0.3 }, new double[] { 9.2, 0.06 } };
+                    len = 0.8; break;
+                case "柔和":
+                    notes = new double[][] { new double[] { 784, 0, 0.7, 1 }, new double[] { 1174.7, 0.16, 0.9, 0.7 } };
+                    partials = new double[][] { new double[] { 1, 1 }, new double[] { 2, 0.08 } };
+                    attack = 0.025; len = 1.5; gain = 0.45; break;
+                default: return null;
+            }
+            const int rate = 44100;
+            int n = (int)(rate * len);
+            double[] buf = new double[n];
+            foreach (double[] nt in notes)
+            {
+                int start = (int)(nt[1] * rate);
+                for (int i = start; i < n; i++)
+                {
+                    double t = (i - start) / (double)rate;
+                    double env = Math.Min(1, t / attack) * Math.Exp(-t / nt[2]);
+                    if (env < 0.0005 && t > attack) break;
+                    double v = 0;
+                    foreach (double[] pa in partials) v += pa[1] * Math.Sin(2 * Math.PI * nt[0] * pa[0] * t) * (pa[0] > 1.5 ? Math.Exp(-t / (nt[2] * 0.5)) : 1);
+                    buf[i] += nt[3] * env * v;
+                }
+            }
+            double peak = 0.0001;
+            foreach (double v in buf) peak = Math.Max(peak, Math.Abs(v));
+            // 结尾 30 毫秒淡出,不会"啪"一声
+            int fade = rate * 3 / 100;
+            for (int i = 0; i < fade && i < n; i++) buf[n - 1 - i] *= i / (double)fade;
+            using (MemoryStream ms = new MemoryStream())
+            using (BinaryWriter w = new BinaryWriter(ms))
+            {
+                w.Write(Encoding.ASCII.GetBytes("RIFF")); w.Write(36 + n * 2); w.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
+                w.Write(16); w.Write((short)1); w.Write((short)1); w.Write(rate); w.Write(rate * 2); w.Write((short)2); w.Write((short)16);
+                w.Write(Encoding.ASCII.GetBytes("data")); w.Write(n * 2);
+                for (int i = 0; i < n; i++) w.Write((short)Math.Round(buf[i] / peak * gain * 32767));
+                w.Flush();
+                return ms.ToArray();
+            }
+        }
+    }
+
+    // 新建 / 编辑一条提醒
+    class ReminderEditor : Form
+    {
+        static readonly string[] Labels = new string[] { "到期", "截止", "还款", "会议", "提醒" };
+        static readonly string[] Leads = new string[] { "准时", "提前 1 小时", "当天早上", "提前 1 天", "提前 3 天" };
+
+        readonly Reminder editing;
+        readonly TextBox content = new TextBox();
+        readonly StepField dueDate = new StepField();
+        readonly StepField dueTime = new StepField();
+        readonly Segmented labelSeg = new Segmented();
+        readonly Segmented leadSeg = new Segmented();
+        readonly SearchBox note = new SearchBox();
+
+        public static void Edit(IWin32Window owner, Reminder r, string text)
+        {
+            using (ReminderEditor f = new ReminderEditor(r, text)) f.ShowDialog(owner);
+        }
+
+        ReminderEditor(Reminder r, string text)
+        {
+            editing = r;
+            Theme t = Theme.Cur;
+            Text = (r == null ? "新建提醒" : "编辑提醒") + " · 时光轴";
+            try { if (Brand.LargeIcon != null) Icon = Brand.LargeIcon; } catch { }
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            MaximizeBox = MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+            TopMost = true;
+            BackColor = SetPal.Back;
+            Font = Gfx.UI;
+            ClientSize = new Size(Gfx.S(480), Gfx.S(566));
+            int x = Gfx.S(28), w = ClientSize.Width - Gfx.S(56), y = Gfx.S(22);
+
+            Lbl(r == null ? "新建提醒" : "编辑提醒", SetPal.PageTitle, t.Text, x, y);
+            y += Gfx.S(52);
+
+            Lbl("内容", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
+            Panel box = new Panel();
+            box.SetBounds(x, y, w, Gfx.S(86));
+            box.BackColor = SetPal.Back;
+            box.Paint += delegate(object s, PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Gfx.FillRound(e.Graphics, Theme.Cur.Input, new Rectangle(0, 0, box.Width - 1, box.Height - 1), 10);
+            };
+            content.Multiline = true;
+            content.BorderStyle = BorderStyle.None;
+            content.BackColor = t.Input;
+            content.ForeColor = t.Text;
+            content.Font = Gfx.UI;
+            content.SetBounds(Gfx.S(12), Gfx.S(10), w - Gfx.S(24), Gfx.S(66));
+            content.Text = r != null ? r.Text : (text ?? "");
+            box.Controls.Add(content);
+            Controls.Add(box);
+            y += Gfx.S(86) + Gfx.S(16);
+
+            Lbl("什么时候", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
+            DateTime init = r != null ? r.Due : DateTime.Today.AddDays(1);
+            dueDate.Value = init.Date;
+            dueDate.SetBounds(x, y, w - Gfx.S(140), Gfx.S(36));
+            dueTime.TimeMode = true;
+            dueTime.AllDay = r == null || !r.HasTime;
+            dueTime.Value = r != null && r.HasTime ? DateTime.Today.Add(r.Due.TimeOfDay) : DateTime.Today.AddHours(Config.RemindHour);
+            dueTime.SetBounds(dueDate.Right + Gfx.S(10), y, Gfx.S(130), Gfx.S(36));
+            Controls.Add(dueDate);
+            Controls.Add(dueTime);
+            y += Gfx.S(36) + Gfx.S(16);
+
+            Lbl("类型", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
+            labelSeg.Labels = Labels;
+            int li = r != null ? Array.IndexOf(Labels, r.Label) : 4;
+            labelSeg.Selected = li < 0 ? 0 : li;
+            labelSeg.SetBounds(x, y, w, Gfx.S(32));
+            Controls.Add(labelSeg);
+            y += Gfx.S(32) + Gfx.S(16);
+
+            Lbl("提醒我", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
+            leadSeg.Labels = Leads;
+            leadSeg.Selected = r != null ? LeadOf(r) : (Config.LeadDays == 0 ? 2 : Config.LeadDays == 3 ? 4 : 3);
+            leadSeg.SetBounds(x, y, w, Gfx.S(32));
+            Controls.Add(leadSeg);
+            y += Gfx.S(32) + Gfx.S(16);
+
+            Lbl("备注(可不填)", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
+            note.ShowIcon = false;
+            note.Box.Font = Gfx.UI;
+            note.Box.Text = r != null ? r.Note : "";
+            note.SetBounds(x, y, w, Gfx.S(32));
+            Controls.Add(note);
+
+            Btn ok = new Btn();
+            ok.Text = "保存";
+            ok.Primary = true;
+            ok.SetBounds(ClientSize.Width - Gfx.S(28 + 92), ClientSize.Height - Gfx.S(54), Gfx.S(92), Gfx.S(34));
+            ok.Click += delegate { Save(); };
+            Controls.Add(ok);
+            Btn cancel = new Btn();
+            cancel.Text = "取消";
+            cancel.SetBounds(ok.Left - Gfx.S(10 + 82), ok.Top, Gfx.S(82), Gfx.S(34));
+            cancel.Click += delegate { Close(); };
+            Controls.Add(cancel);
+            Shown += delegate { content.Focus(); content.Select(content.TextLength, 0); };
+        }
+
+        void Lbl(string s, Font f, Color c, int x, int y)
+        {
+            Label l = new Label();
+            l.Text = s; l.Font = f; l.ForeColor = c; l.BackColor = SetPal.Back; l.AutoSize = true; l.Location = new Point(x, y);
+            Controls.Add(l);
+        }
+
+        static DateTime AtFor(int lead, DateTime d)
+        {
+            int hour = Math.Max(0, Math.Min(23, Config.RemindHour));
+            switch (lead)
+            {
+                case 0: return d;
+                case 1: return d.AddHours(-1);
+                case 2:
+                    {
+                        DateTime morning = d.Date.AddHours(hour);
+                        return morning <= d ? morning : d.AddHours(-1);   // 早上 8 点的事,就提前 1 小时
+                    }
+                case 3: return d.Date.AddDays(-1).AddHours(hour);
+                default: return d.Date.AddDays(-3).AddHours(hour);
+            }
+        }
+
+        static int LeadOf(Reminder r)
+        {
+            for (int i = 0; i < Leads.Length; i++) if (AtFor(i, r.HasTime ? r.Due : r.Due.Date.AddHours(Config.RemindHour)) == r.At) return i;
+            double h = (r.Due - r.At).TotalHours;
+            return h <= 0.1 ? 0 : h <= 2 ? 1 : h < 24 ? 2 : h < 60 ? 3 : 4;
+        }
+
+        void Save()
+        {
+            string txt = content.Text.Trim();
+            bool hasTime = !dueTime.AllDay;
+            // 全天的事:按"那天的提醒钟点"来算提前多久
+            DateTime d = dueDate.Value.Date.Add(hasTime ? dueTime.Value.TimeOfDay : TimeSpan.FromHours(Config.RemindHour));
+            d = new DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, 0);
+            if (txt.Length == 0) txt = Labels[labelSeg.Selected];
+            DateTime at = AtFor(leadSeg.Selected, d);
+            if (at <= DateTime.Now) at = d > DateTime.Now ? d : DateTime.Now.AddMinutes(1);
+            Reminder r = editing;
+            Timeline.Load();
+            if (r == null)
+            {
+                r = new Reminder();
+                Timeline.Items.Add(r);
+            }
+            r.Text = txt;
+            r.Due = hasTime ? d : d.Date;
+            r.HasTime = hasTime;
+            r.Label = Labels[labelSeg.Selected];
+            r.At = at;
+            r.Note = note.Box.Text.Trim();
+            r.Done = false;
+            r.Notified = false;
+            Timeline.Save();
+            Close();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.DarkTitle(Handle, Theme.Cur.Dark);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape) { Close(); return true; }
+            if (keyData == (Keys.Control | Keys.Enter)) { Save(); return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
     }
 

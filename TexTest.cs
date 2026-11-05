@@ -138,6 +138,12 @@ static class TexTest
                 Shot("editor-" + mode, ed.Bounds);
                 if (mode == 1)
                 {
+                    object df = typeof(Glean.ReminderEditor).GetField("dueDate", NP).GetValue(ed);
+                    df.GetType().GetMethod("ShowMenu", NP).Invoke(df, null); Pump(600);
+                    Shot("datemenu", new Rectangle(ed.Left, ed.Top, ed.Width + 120, ed.Height + 250));
+                    SendKeys.SendWait("{ESC}"); Pump(300);
+                    object tf2 = typeof(Glean.ReminderEditor).GetField("dueTime", NP).GetValue(ed);
+                    tf2.GetType().GetMethod("Step", NP).Invoke(tf2, new object[] { 1 });
                     TextBox tb = (TextBox)typeof(Glean.ReminderEditor).GetField("content", NP).GetValue(ed);
                     tb.Text = "给妈妈买生日礼物";
                     typeof(Glean.ReminderEditor).GetMethod("Save", NP).Invoke(ed, null);

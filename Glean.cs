@@ -12718,10 +12718,185 @@ namespace Glean
         }
     }
 
+    // 日期 / 时间选择框:圆角输入框的样子,左右箭头一格一格调,滚轮也能调,点中间弹出常用选项
+    class StepField : Control
+    {
+        public DateTime Value = DateTime.Today;
+        public bool TimeMode;          // true = 选钟点
+        public bool AllDay;            // 钟点框:不设具体时间
+        public bool AllowAllDay = true;
+        public event EventHandler Changed;
+        int hover;   // 1 左箭头  2 中间  3 右箭头
+
+        public StepField()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            Height = Gfx.S(36);
+            Cursor = Cursors.Hand;
+        }
+
+        Rectangle LeftR { get { return new Rectangle(0, 0, Gfx.S(34), Height); } }
+        Rectangle RightR { get { return new Rectangle(Width - Gfx.S(34), 0, Gfx.S(34), Height); } }
+
+        public string Display
+        {
+            get
+            {
+                if (TimeMode) return AllDay ? "全天" : Value.ToString("HH:mm", CultureInfo.InvariantCulture);
+                int n = (int)(Value.Date - DateTime.Today).TotalDays;
+                string rel = n == 0 ? "今天" : n == 1 ? "明天" : n == 2 ? "后天" : n > 0 && n < 7 ? n + " 天后" : null;
+                string s = (Value.Year != DateTime.Today.Year ? Value.Year + "年" : "") + Value.Month + "月" + Value.Day + "日  " + DueDate.Week(Value);
+                return rel != null ? s + "  ·  " + rel : s;
+            }
+        }
+
+        void Set(DateTime v, bool allDay)
+        {
+            if (!TimeMode && v.Date < DateTime.Today) v = DateTime.Today;
+            Value = v;
+            AllDay = allDay && AllowAllDay;
+            Invalidate();
+            if (Changed != null) Changed(this, EventArgs.Empty);
+        }
+
+        void Step(int d)
+        {
+            if (TimeMode)
+            {
+                if (AllDay) { Set(DateTime.Today.AddHours(Config.RemindHour), false); return; }
+                DateTime t = DateTime.Today.Add(Value.TimeOfDay).AddMinutes(30 * d);
+                Set(DateTime.Today.Add(t.TimeOfDay), false);   // 23:30 再往后就回到 0:00
+            }
+            else Set(Value.AddDays(d), false);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Theme t = Theme.Cur;
+            g.Clear(Parent != null ? Parent.BackColor : t.Bg);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+            Gfx.FillRound(g, hover == 2 ? Theme.Blend(t.Input, t.Text, 0.04) : t.Input, r, 10);
+            if (Focused) Gfx.DrawRound(g, Color.FromArgb(120, t.Accent), r, 10, Gfx.F(1.5f));
+            Chevron(g, LeftR, -1, hover == 1);
+            Chevron(g, RightR, 1, hover == 3);
+            Gfx.Text(g, Display, Gfx.UI, new Rectangle(LeftR.Right, 0, RightR.X - LeftR.Right, Height),
+                TimeMode && AllDay ? t.Sub : t.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.SingleLine);
+        }
+
+        void Chevron(Graphics g, Rectangle r, int dir, bool hot)
+        {
+            Theme t = Theme.Cur;
+            if (hot) Gfx.FillRound(g, Theme.Blend(t.Input, t.Text, 0.08), new Rectangle(r.X + Gfx.S(4), r.Y + Gfx.S(4), r.Width - Gfx.S(8), r.Height - Gfx.S(8)), 7);
+            float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f, k = Gfx.F(4f);
+            using (Pen p = new Pen(hot ? t.Text : t.Sub, Gfx.F(1.6f)))
+            {
+                p.StartCap = p.EndCap = LineCap.Round;
+                p.LineJoin = LineJoin.Round;
+                g.DrawLines(p, new PointF[] { new PointF(cx - dir * k * 0.5f, cy - k), new PointF(cx + dir * k * 0.5f, cy), new PointF(cx - dir * k * 0.5f, cy + k) });
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int h = LeftR.Contains(e.Location) ? 1 : RightR.Contains(e.Location) ? 3 : 2;
+            if (h != hover) { hover = h; Invalidate(); }
+        }
+
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = 0; Invalidate(); }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            Focus();
+            if (e.Button != MouseButtons.Left) return;
+            if (LeftR.Contains(e.Location)) Step(-1);
+            else if (RightR.Contains(e.Location)) Step(1);
+            else ShowMenu();
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            Step(e.Delta > 0 ? -1 : 1);
+        }
+
+        protected override bool IsInputKey(Keys k) { return k == Keys.Left || k == Keys.Right || k == Keys.Up || k == Keys.Down || base.IsInputKey(k); }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Down) Step(-1);
+            else if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Up) Step(1);
+        }
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+        void ShowMenu()
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            DateTime today = DateTime.Today;
+            if (TimeMode)
+            {
+                if (AllowAllDay)
+                {
+                    ToolStripMenuItem all = new ToolStripMenuItem("全天(不设具体时间)", null, delegate { Set(Value, true); });
+                    all.Checked = AllDay;
+                    m.Items.Add(all);
+                    m.Items.Add(new ToolStripSeparator());
+                }
+                foreach (int h in new int[] { 8, 9, 10, 12, 14, 15, 17, 18, 20, 21 })
+                {
+                    int hh = h;
+                    ToolStripMenuItem mi = new ToolStripMenuItem(h.ToString("00") + ":00", null, delegate { Set(today.AddHours(hh), false); });
+                    mi.Checked = !AllDay && Value.Hour == h && Value.Minute == 0;
+                    m.Items.Add(mi);
+                }
+            }
+            else
+            {
+                int toFri = ((int)DayOfWeek.Friday - (int)today.DayOfWeek + 7) % 7;
+                int toMon = ((int)DayOfWeek.Monday - (int)today.DayOfWeek + 7) % 7;
+                if (toMon == 0) toMon = 7;
+                AddDay(m, "今天", today);
+                AddDay(m, "明天", today.AddDays(1));
+                AddDay(m, "后天", today.AddDays(2));
+                if (toFri > 2) AddDay(m, "本周五", today.AddDays(toFri));
+                AddDay(m, "下周一", today.AddDays(toMon));
+                AddDay(m, "一周后", today.AddDays(7));
+                AddDay(m, "一个月后", today.AddMonths(1));
+                m.Items.Add(new ToolStripSeparator());
+                // 日历:直接嵌在下拉菜单里
+                MonthCalendar cal = new MonthCalendar();
+                cal.MaxSelectionCount = 1;
+                cal.MinDate = today;
+                cal.SetDate(Value.Date < today ? today : Value.Date);
+                cal.DateSelected += delegate(object s, DateRangeEventArgs ev) { Set(ev.Start.Date.Add(Value.TimeOfDay), false); m.Close(); };
+                ToolStripControlHost host = new ToolStripControlHost(cal);
+                host.Margin = new Padding(Gfx.S(6), Gfx.S(2), Gfx.S(6), Gfx.S(2));
+                m.Items.Add(host);
+            }
+            Theme.StyleMenu(m);
+            m.Show(this, new Point(0, Height + Gfx.S(4)));
+        }
+
+        void AddDay(ContextMenuStrip m, string text, DateTime d)
+        {
+            ToolStripMenuItem mi = new ToolStripMenuItem(text + "    " + d.Month + "月" + d.Day + "日 " + DueDate.Week(d), null, delegate { Set(d.Add(Value.TimeOfDay), false); });
+            mi.Checked = Value.Date == d;
+            m.Items.Add(mi);
+        }
+    }
+
     // 选一个日期和时间
     class PickTimeForm : Form
     {
-        readonly DateTimePicker pick = new DateTimePicker();
+        readonly StepField dateF = new StepField();
+        readonly StepField timeF = new StepField();
         public DateTime Value;
 
         public PickTimeForm(string title, DateTime initial)
@@ -12735,7 +12910,7 @@ namespace Glean
             TopMost = true;
             BackColor = SetPal.Back;
             Font = Gfx.UI;
-            ClientSize = new Size(Gfx.S(360), Gfx.S(170));
+            ClientSize = new Size(Gfx.S(400), Gfx.S(176));
             Label l = new Label();
             l.Text = title;
             l.Font = Gfx.HeaderFont;
@@ -12743,21 +12918,24 @@ namespace Glean
             l.AutoSize = true;
             l.Location = new Point(Gfx.S(24), Gfx.S(20));
             Controls.Add(l);
-            pick.Format = DateTimePickerFormat.Custom;
-            pick.CustomFormat = "yyyy 年 M 月 d 日   HH:mm";
-            pick.ShowUpDown = false;
-            pick.Font = Gfx.Input;
-            pick.MinDate = DateTime.Today;
-            pick.Value = initial < DateTime.Now ? DateTime.Now.AddHours(1) : initial;
-            pick.SetBounds(Gfx.S(24), Gfx.S(58), ClientSize.Width - Gfx.S(48), Gfx.S(32));
-            Controls.Add(pick);
+            DateTime v0 = initial < DateTime.Now ? DateTime.Now.AddHours(1) : initial;
+            v0 = v0.Date.AddMinutes(Math.Ceiling(v0.TimeOfDay.TotalMinutes / 30.0) * 30);
+            int fw = ClientSize.Width - Gfx.S(48);
+            dateF.Value = v0.Date;
+            dateF.SetBounds(Gfx.S(24), Gfx.S(60), fw - Gfx.S(130), Gfx.S(36));
+            timeF.TimeMode = true;
+            timeF.AllowAllDay = false;
+            timeF.Value = DateTime.Today.Add(v0.TimeOfDay);
+            timeF.SetBounds(dateF.Right + Gfx.S(10), Gfx.S(60), Gfx.S(120), Gfx.S(36));
+            Controls.Add(dateF);
+            Controls.Add(timeF);
             Btn ok = new Btn();
             ok.Text = "确定";
             ok.Primary = true;
             ok.SetBounds(ClientSize.Width - Gfx.S(24 + 88), ClientSize.Height - Gfx.S(52), Gfx.S(88), Gfx.S(34));
             ok.Click += delegate
             {
-                Value = pick.Value;
+                Value = dateF.Value.Date.Add(timeF.Value.TimeOfDay);
                 if (Value <= DateTime.Now) Value = DateTime.Now.AddMinutes(1);
                 DialogResult = DialogResult.OK;
                 Close();
@@ -13246,11 +13424,11 @@ namespace Glean
 
         readonly Reminder editing;
         readonly TextBox content = new TextBox();
-        readonly DateTimePicker due = new DateTimePicker();
+        readonly StepField dueDate = new StepField();
+        readonly StepField dueTime = new StepField();
         readonly Segmented labelSeg = new Segmented();
         readonly Segmented leadSeg = new Segmented();
         readonly SearchBox note = new SearchBox();
-        DateTime initDue;
 
         public static void Edit(IWin32Window owner, Reminder r, string text)
         {
@@ -13270,7 +13448,7 @@ namespace Glean
             TopMost = true;
             BackColor = SetPal.Back;
             Font = Gfx.UI;
-            ClientSize = new Size(Gfx.S(480), Gfx.S(520));
+            ClientSize = new Size(Gfx.S(480), Gfx.S(566));
             int x = Gfx.S(28), w = ClientSize.Width - Gfx.S(56), y = Gfx.S(22);
 
             Lbl(r == null ? "新建提醒" : "编辑提醒", SetPal.PageTitle, t.Text, x, y);
@@ -13297,16 +13475,16 @@ namespace Glean
             y += Gfx.S(86) + Gfx.S(16);
 
             Lbl("什么时候", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
-            due.Format = DateTimePickerFormat.Custom;
-            due.CustomFormat = "yyyy 年 M 月 d 日   HH:mm";
-            due.Font = Gfx.Input;
-            DateTime init = r != null ? r.Due : DateTime.Today.AddDays(1).AddHours(Config.RemindHour);
-            if (r != null && !r.HasTime) init = r.Due.Date.AddHours(Config.RemindHour);
-            due.Value = init;
-            initDue = init;
-            due.SetBounds(x, y, w, Gfx.S(32));
-            Controls.Add(due);
-            y += Gfx.S(32) + Gfx.S(16);
+            DateTime init = r != null ? r.Due : DateTime.Today.AddDays(1);
+            dueDate.Value = init.Date;
+            dueDate.SetBounds(x, y, w - Gfx.S(140), Gfx.S(36));
+            dueTime.TimeMode = true;
+            dueTime.AllDay = r == null || !r.HasTime;
+            dueTime.Value = r != null && r.HasTime ? DateTime.Today.Add(r.Due.TimeOfDay) : DateTime.Today.AddHours(Config.RemindHour);
+            dueTime.SetBounds(dueDate.Right + Gfx.S(10), y, Gfx.S(130), Gfx.S(36));
+            Controls.Add(dueDate);
+            Controls.Add(dueTime);
+            y += Gfx.S(36) + Gfx.S(16);
 
             Lbl("类型", SetPal.Header, t.Sub, x + Gfx.S(4), y); y += Gfx.S(22);
             labelSeg.Labels = Labels;
@@ -13341,6 +13519,7 @@ namespace Glean
             cancel.SetBounds(ok.Left - Gfx.S(10 + 82), ok.Top, Gfx.S(82), Gfx.S(34));
             cancel.Click += delegate { Close(); };
             Controls.Add(cancel);
+            Shown += delegate { content.Focus(); content.Select(content.TextLength, 0); };
         }
 
         void Lbl(string s, Font f, Color c, int x, int y)
@@ -13377,10 +13556,12 @@ namespace Glean
         void Save()
         {
             string txt = content.Text.Trim();
-            DateTime d = due.Value;
+            bool hasTime = !dueTime.AllDay;
+            // 全天的事:按"那天的提醒钟点"来算提前多久
+            DateTime d = dueDate.Value.Date.Add(hasTime ? dueTime.Value.TimeOfDay : TimeSpan.FromHours(Config.RemindHour));
             d = new DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, 0);
             if (txt.Length == 0) txt = Labels[labelSeg.Selected];
-            DateTime at = AtFor(leadSeg.Selected, d);   // 只记日子时,d 是"那天的提醒钟点",按它来算
+            DateTime at = AtFor(leadSeg.Selected, d);
             if (at <= DateTime.Now) at = d > DateTime.Now ? d : DateTime.Now.AddMinutes(1);
             Reminder r = editing;
             Timeline.Load();
@@ -13390,8 +13571,6 @@ namespace Glean
                 Timeline.Items.Add(r);
             }
             r.Text = txt;
-            // 没动过钟点、原来也没有具体时间:只记日子
-            bool hasTime = (editing != null && editing.HasTime) || d.TimeOfDay != initDue.TimeOfDay;
             r.Due = hasTime ? d : d.Date;
             r.HasTime = hasTime;
             r.Label = Labels[labelSeg.Selected];

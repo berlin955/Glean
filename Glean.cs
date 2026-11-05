@@ -8191,6 +8191,8 @@ namespace Glean
             Perf.Mark("glass");
             SetBounds(wa.Left + m, scr.Bounds.Bottom, wa.Width - 2 * m, h);
             Show();
+            // 面板这时还在屏幕下面:先把里面的东西全部画好再开始滑,画得慢也只是晚一点出来,不会卡在半路
+            PaintNow();
             Perf.Mark("show");
             Activate();
             Native.SetForegroundWindow(Handle);
@@ -8198,6 +8200,13 @@ namespace Glean
             spaceDown = (Native.GetAsyncKeyState(0x20) & 0x8000) != 0;
             keyPoll.Start();
             StartSlide(scr.Bounds.Bottom, wa.Bottom - h - mb, 480);
+        }
+
+        [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr rgn, int flags);
+
+        void PaintNow()
+        {
+            try { RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0080 | 0x0100); } catch { }   // 重画 + 包括子控件 + 立即
         }
 
         void StartSlide(int from, int to, int ms)
@@ -13719,9 +13728,9 @@ namespace Glean
             timelineTimer.Tick += delegate { try { Timeline.Tick(); } catch { } };
             timelineTimer.Start();
 
-            // 启动 3 秒后,在后台把面板的窗口先建好:第一次按 Win + V 不用再等
+            // 启动 1 秒后,把面板的窗口先建好、先画一遍:第一次按 Win + V 不用再等
             System.Windows.Forms.Timer warm = new System.Windows.Forms.Timer();
-            warm.Interval = 3000;
+            warm.Interval = 1000;
             warm.Tick += delegate
             {
                 warm.Stop();
@@ -13731,6 +13740,32 @@ namespace Glean
             warm.Start();
 
             IntPtr unused = this.Handle;   // 强制创建窗口句柄,用来接收剪切板和热键消息
+        }
+
+        // 刚开机 / 刚启动时,程序里的代码都还没编译成机器码,第一次用到时才现编,这就是"第一次呼出卡一下"的主要原因。
+        // 启动时在后台低优先级线程上把所有代码提前编译一遍(不占界面线程,不影响启动速度)
+        static void PreJit()
+        {
+            Thread t = new Thread(delegate()
+            {
+                try
+                {
+                    foreach (Type ty in typeof(MainForm).Assembly.GetTypes())
+                    {
+                        if (ty.IsGenericTypeDefinition || ty.IsInterface) continue;
+                        foreach (MethodBase mb in ty.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                                                    .Cast<MethodBase>().Concat(ty.GetConstructors(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)))
+                        {
+                            if (mb.IsAbstract || mb.ContainsGenericParameters) continue;
+                            try { System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(mb.MethodHandle); } catch { }
+                        }
+                    }
+                }
+                catch { }
+            });
+            t.IsBackground = true;
+            t.Priority = ThreadPriority.BelowNormal;
+            t.Start();
         }
 
         // 始终保持不可见
@@ -14239,6 +14274,7 @@ namespace Glean
                 }
                 catch { }
                 Theme.Refresh();
+                PreJit();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new MainForm());

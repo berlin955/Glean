@@ -50,7 +50,7 @@ static class TexTest
             Stopwatch s0 = Stopwatch.StartNew();
             Setup(dir);
             Out("setup " + s0.ElapsedMilliseconds);
-            foreach (string m in new string[] { "cold", "prewarm", "cold", "prewarm" })
+            foreach (string m in new string[] { "cold", "prejit", "both", "cold", "prejit", "both" })
             {
                 Process p = Process.Start(Application.ExecutablePath, m);
                 p.WaitForExit();
@@ -72,7 +72,13 @@ static class TexTest
             Stopwatch sw = Stopwatch.StartNew();
             Glean.ShelfForm shelf = new Glean.ShelfForm(null, hist);
             Out("[" + mode + "] ctor " + sw.ElapsedMilliseconds);
-            if (mode == "prewarm")
+            if (mode == "prejit" || mode == "both")
+            {
+                sw.Restart();
+                typeof(Glean.MainForm).GetMethod("PreJit", NP).Invoke(null, null);
+                Pump(1500);
+            }
+            if (mode == "both")
             {
                 Pump(500);
                 sw.Restart();

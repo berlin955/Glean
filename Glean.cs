@@ -13744,7 +13744,7 @@ namespace Glean
 
         // 刚开机 / 刚启动时,程序里的代码都还没编译成机器码,第一次用到时才现编,这就是"第一次呼出卡一下"的主要原因。
         // 启动时在后台低优先级线程上把所有代码提前编译一遍(不占界面线程,不影响启动速度)
-        static void PreJit()
+        internal static void PreJit()
         {
             Thread t = new Thread(delegate()
             {
@@ -14274,7 +14274,7 @@ namespace Glean
                 }
                 catch { }
                 Theme.Refresh();
-                PreJit();
+                MainForm.PreJit();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new MainForm());

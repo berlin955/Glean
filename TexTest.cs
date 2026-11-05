@@ -102,6 +102,11 @@ static class TexTest
             Glean.Timeline.Items.Clear();
             Glean.Reminder a1 = R("物业费缴纳截止,逾期将产生滞纳金", 0, 0, "缴费", false, false); a1.Note = "交到物业前台"; Glean.Timeline.Items.Add(a1);
             Glean.Timeline.Items.Add(R("信用卡账单 ¥3,280.00 最后还款日", 2, 1, "还款", false, false));
+            Glean.Timeline.Items.Add(R("项目周会", 1, 0, "会议", false, true));
+            Glean.Timeline.Items.Add(R("物业费", -2, -3, "缴费", false, false));
+            Glean.Timeline.Items.Add(R("2026年12月19日老婆生日", 44, 41, "生日", false, false));
+            Glean.Timeline.Items.Add(R("驾照换证", 538, 530, "到期", false, false));
+            Glean.Timeline.Items.Add(R("提交季度报销单据", -3, -4, "截止", true, false));
             Glean.Timeline.Save();
             // 保存再读回,备注还在
             Glean.Timeline.Items.Clear(); typeof(Glean.Timeline).GetField("loaded", NP).SetValue(null, false); Glean.Timeline.Load();
@@ -137,9 +142,17 @@ static class TexTest
             Control view = tw.Controls[0];
             view.GetType().GetField("scroll", NP).SetValue(view, 333); view.Invalidate(); Pump(400);
             Shot("timeline-scrolled", tw.Bounds);
+            foreach (int ai in new int[] { 2, 4 })
+            {
+                Glean.AlertCard ac = new Glean.AlertCard(Glean.Timeline.Items[ai]);
+                ac.Popup(0); Pump(600);
+                Rectangle ab = ac.Bounds; ab.Inflate(6, 6);
+                Shot("alert-" + ai, ab);
+                ac.Close(); Pump(200);
+            }
             tw.Close(); Pump(200);
             Glean.Config.ThemeMode = 1; Glean.Theme.Refresh();
-            Glean.Timeline.Items.RemoveRange(2, 6);
+            Glean.Timeline.Items.RemoveRange(7, 6);
             Glean.Timeline.Open(); Pump(800);
             foreach (Form f in Application.OpenForms) if (f is Glean.TimelineForm) tw = f;
             tw.Location = new Point(20, 20); Pump(300);

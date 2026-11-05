@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.28.0.0")]
-[assembly: AssemblyFileVersion("0.28.0.0")]
+[assembly: AssemblyVersion("0.29.0.0")]
+[assembly: AssemblyFileVersion("0.29.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,7 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.28";
+        public const string Version = "0.29";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -11864,6 +11864,42 @@ namespace Glean
             }
         }
 
+        // 左边的大字:还剩几天("44" / "明天" / "今天" / 过期的天数)
+        public string BigText
+        {
+            get
+            {
+                int n = DaysLeft;
+                if (n == 0) return "今天";
+                if (n == 1) return "明天";
+                return Math.Abs(n).ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        // 大字下面的小字
+        public string BigSub
+        {
+            get
+            {
+                int n = DaysLeft;
+                if (n < 0) return "天前已到期";
+                if (n <= 1) return HasTime ? Due.ToString("HH:mm", CultureInfo.InvariantCulture) : DueDate.Week(Due);
+                return "天后";
+            }
+        }
+
+        public bool BigIsWord { get { int n = DaysLeft; return n == 0 || n == 1; } }
+
+        // 标题里的日期:"12月19日 周六"、"2027年2月3日 周三 15:00"
+        public string DateLine
+        {
+            get
+            {
+                return (Due.Year != DateTime.Today.Year ? Due.Year + "年" : "") + DueDate.Md(Due) + " " + DueDate.Week(Due) +
+                       (HasTime ? " " + Due.ToString("HH:mm", CultureInfo.InvariantCulture) : "");
+            }
+        }
+
         public string Snippet(int max)
         {
             string s = Regex.Replace(Text ?? "", @"\s+", " ").Trim();
@@ -12249,6 +12285,7 @@ namespace Glean
         public static readonly Font DayFont = new Font("Segoe UI Semibold", 22f);
         public static readonly Font DayFontSmall = new Font("Segoe UI Semibold", 17f);
         public static readonly Font RingFont = new Font("Segoe UI Semibold", 8.5f);
+        public static readonly Font WordFont = new Font("Microsoft YaHei UI", 15f, FontStyle.Bold);
     }
 
     // 带投影、圆角、可以半透明的小窗口(提醒胶囊、到点提醒卡片的底子)
@@ -12676,10 +12713,12 @@ namespace Glean
             Color urg = Timeline.Urgency(r.Due);
             // 左边:大号日子 + 月份 / 星期
             Rectangle dateCol = new Rectangle(c.X + Gfx.S(18), c.Y + Gfx.S(18), Gfx.S(64), Gfx.S(70));
-            Timeline.Txt(g, r.Due.Day.ToString(CultureInfo.InvariantCulture), Timeline.DayFont, new RectangleF(dateCol.X, dateCol.Y, dateCol.Width, Gfx.S(42)),
+            string big = r.BigText;
+            Font bigF = r.BigIsWord ? Timeline.WordFont : (big.Length >= 3 ? Timeline.DayFontSmall : Timeline.DayFont);
+            Timeline.Txt(g, big, bigF, new RectangleF(dateCol.X - Gfx.S(6), dateCol.Y, dateCol.Width + Gfx.S(12), Gfx.S(42)),
                 urg, StringAlignment.Center, StringAlignment.Center, false);
-            Timeline.Txt(g, r.Due.Month + "月 · " + DueDate.Week(r.Due), Gfx.Small, new RectangleF(dateCol.X - Gfx.S(6), dateCol.Y + Gfx.S(44), dateCol.Width + Gfx.S(12), Gfx.S(18)),
-                t.Sub, StringAlignment.Center, StringAlignment.Center, false);
+            Timeline.Txt(g, r.BigSub, Gfx.Small, new RectangleF(dateCol.X - Gfx.S(6), dateCol.Y + Gfx.S(44), dateCol.Width + Gfx.S(12), Gfx.S(18)),
+                r.DaysLeft < 0 ? Timeline.Red : t.Sub, StringAlignment.Center, StringAlignment.Center, false);
             using (Pen sep = new Pen(t.Dark ? Color.FromArgb(60, 255, 255, 255) : Color.FromArgb(24, 0, 0, 0)))
                 g.DrawLine(sep, dateCol.Right + Gfx.S(10), c.Y + Gfx.S(20), dateCol.Right + Gfx.S(10), c.Y + Gfx.S(92));
 
@@ -12690,7 +12729,7 @@ namespace Glean
             // 小圆点 + 标题
             float dot = Gfx.S(8);
             using (SolidBrush b = new SolidBrush(urg)) g.FillEllipse(b, head.X, head.Y + (head.Height - dot) / 2, dot, dot);
-            string ttl = r.Headline + (r.HasTime ? "  " + r.Due.ToString("HH:mm", CultureInfo.InvariantCulture) : "");
+            string ttl = r.DateLine + " · " + r.Label;
             Timeline.Txt(g, ttl, Gfx.HeaderFont, new RectangleF(head.X + dot + Gfx.S(8), head.Y, head.Width - dot - Gfx.S(8), head.Height), t.Text,
                 StringAlignment.Near, StringAlignment.Center, false);
             RectangleF body = new RectangleF(tx, head.Bottom + Gfx.S(6), c.Right - tx - Gfx.S(18), Gfx.S(56));
@@ -13167,17 +13206,19 @@ namespace Glean
 
             // 日期块
             Rectangle dc = new Rectangle(rc.X + Gfx.S(8), rc.Y, Gfx.S(70), rc.Height);
-            TextRenderer.DrawText(g, r.Due.Day.ToString(CultureInfo.InvariantCulture), Timeline.DayFont, new Rectangle(dc.X, dc.Y + Gfx.S(12), dc.Width, Gfx.S(40)),
+            // 左边大字:还剩几天;已完成的就淡淡地显示一个勾
+            string big = r.Done ? "✓" : r.BigText;
+            Font bigF = r.Done ? Timeline.WordFont : r.BigIsWord ? Timeline.WordFont : (big.Length >= 3 ? Timeline.DayFontSmall : Timeline.DayFont);
+            TextRenderer.DrawText(g, big, bigF, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(12), dc.Width + Gfx.S(8), Gfx.S(40)),
                 r.Done ? t.Sub : urg, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
-            TextRenderer.DrawText(g, r.Due.Month + "月 · " + DueDate.Week(r.Due), Gfx.Small, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(54), dc.Width + Gfx.S(8), Gfx.S(18)),
-                t.Sub, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
+            TextRenderer.DrawText(g, r.Done ? "已完成" : r.BigSub, Gfx.Small, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(54), dc.Width + Gfx.S(8), Gfx.S(18)),
+                r.DaysLeft < 0 && !r.Done ? Timeline.Red : t.Sub, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
             using (Pen sep = new Pen(SetPal.Sep)) g.DrawLine(sep, dc.Right + Gfx.S(6), rc.Y + Gfx.S(18), dc.Right + Gfx.S(6), rc.Bottom - Gfx.S(18));
 
             int tx = dc.Right + Gfx.S(20);
             int tr = (hov && !r.Done ? row.More.X : row.Ring.X) - Gfx.S(10);
             if (hov && r.Done) tr = row.More.X - Gfx.S(10);
-            string head = r.Done ? "已完成 · " + DueDate.Md(r.Due) + " " + r.Label : r.Headline;
-            if (r.HasTime && !r.Done) head += "  " + r.Due.ToString("HH:mm", CultureInfo.InvariantCulture);
+            string head = r.DateLine + "  ·  " + r.Label;
             TextRenderer.DrawText(g, head, Gfx.Bold, new Rectangle(tx, rc.Y + Gfx.S(12), tr - tx, Gfx.S(22)), textC, card,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             TextRenderer.DrawText(g, r.Snippet(90), Gfx.UI, new Rectangle(tx, rc.Y + Gfx.S(34), tr - tx, Gfx.S(22)), r.Done ? t.Sub : Theme.Blend(t.Text, t.Sub, 0.35), card,
@@ -13214,10 +13255,6 @@ namespace Glean
                     fg.StartCap = fg.EndCap = LineCap.Round;
                     g.DrawArc(fg, rr, -90, 360 * frac);
                 }
-                int n = r.DaysLeft;
-                string inner = n > 0 ? n.ToString(CultureInfo.InvariantCulture) : (n == 0 ? "今" : "!");
-                TextRenderer.DrawText(g, inner, Timeline.RingFont, ring, n <= 0 ? Timeline.Red : t.Text, card,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.NoPadding);
             }
             if (hov)
             {

@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.31.0.0")]
-[assembly: AssemblyFileVersion("0.31.0.0")]
+[assembly: AssemblyVersion("0.32.0.0")]
+[assembly: AssemblyFileVersion("0.32.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,7 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.31";
+        public const string Version = "0.32";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -13095,29 +13095,39 @@ namespace Glean
 
     class TimelineView : Control
     {
-        class Row { public Reminder R; public Rectangle Rect, Ring, More, DoneBtn; public string Group; }
+        class Row { public Reminder R; public Rectangle Rect, Check, More, Chip; public bool First, Last; }
+        class Group { public string Name; public int HeaderY; public Rectangle Box; public int Count; }
 
         // 滚动时整块往上平移画:文字也要跟着平移、跟着裁剪(TextRenderer 默认不管这些)
         const TextFormatFlags Keep = TextFormatFlags.PreserveGraphicsTranslateTransform | TextFormatFlags.PreserveGraphicsClipping;
+        const TextFormatFlags Line = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine |
+                                     TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | Keep;
         readonly List<Row> rows = new List<Row>();
-        readonly List<KeyValuePair<int, string>> headers = new List<KeyValuePair<int, string>>();
+        readonly List<Group> groups = new List<Group>();
         int scroll, contentH;
         Reminder hoverR;   // 按提醒本身记住悬停的是哪一条(每次重画行对象都会重建)
-        int hoverPart;   // 0 行  1 圆环(完成)  2 更多
+        int hoverPart;     // 0 行  1 勾选框  2 更多
+        readonly Dictionary<Reminder, double> ticking = new Dictionary<Reminder, double>();   // 刚点了勾、正在播放完成动画的
         readonly System.Windows.Forms.Timer clock = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
+        static readonly Font TitleFont = new Font("Microsoft YaHei UI", 10.5f);
+        static readonly Font ChipFont = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold);
+        static readonly Font GroupFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold);
 
         public TimelineView()
         {
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
-            clock.Interval = 60 * 1000;   // 每分钟刷新一下倒计时
+            clock.Interval = 60 * 1000;   // 每分钟刷新一下剩余天数
             clock.Tick += delegate { Invalidate(); };
             clock.Start();
+            anim.Interval = 15;
+            anim.Tick += delegate { StepAnim(); };
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) clock.Dispose();
+            if (disposing) { clock.Dispose(); anim.Dispose(); }
             base.Dispose(disposing);
         }
 
@@ -13131,45 +13141,49 @@ namespace Glean
             int toSunday = (7 - (int)DateTime.Today.DayOfWeek) % 7;
             if (n <= toSunday) return "本周";
             if (n <= 7) return "下周";
-            return "之后";
+            return "以后";
         }
 
-        static readonly string[] Order = new string[] { "已过期", "今天", "明天", "本周", "下周", "之后", "已完成" };
+        static readonly string[] Order = new string[] { "已过期", "今天", "明天", "本周", "下周", "以后", "已完成" };
 
-        int TopH { get { return Gfx.S(92); } }
-        int RowH { get { return Gfx.S(92); } }
+        int TopH { get { return Gfx.S(96); } }
+        int RowH { get { return Gfx.S(62); } }
+        int Side { get { return Gfx.S(20); } }
 
         void Build()
         {
             rows.Clear();
-            headers.Clear();
-            int y = TopH, x = Gfx.S(20), w = Width - Gfx.S(40);
+            groups.Clear();
+            int y = TopH, x = Side, w = Width - Side * 2;
             List<Reminder> all = Timeline.Items.ToList();
             foreach (string grp in Order)
             {
                 List<Reminder> list = all.Where(r => GroupOf(r) == grp).ToList();
                 if (list.Count == 0) continue;
                 list = grp == "已完成" ? list.OrderByDescending(r => r.DoneAt).Take(30).ToList() : list.OrderBy(r => r.Due).ThenBy(r => r.At).ToList();
-                headers.Add(new KeyValuePair<int, string>(y, grp + "  " + list.Count));
+                Group gp = new Group();
+                gp.Name = grp;
+                gp.Count = list.Count;
+                gp.HeaderY = y;
                 y += Gfx.S(30);
-                foreach (Reminder r in list)
+                gp.Box = new Rectangle(x, y, w, list.Count * RowH);
+                groups.Add(gp);
+                for (int i = 0; i < list.Count; i++)
                 {
                     Row row = new Row();
-                    row.R = r;
-                    row.Group = grp;
+                    row.R = list[i];
+                    row.First = i == 0;
+                    row.Last = i == list.Count - 1;
                     row.Rect = new Rectangle(x, y, w, RowH);
-                    int rs = Gfx.S(40);
-                    row.Ring = new Rectangle(row.Rect.Right - Gfx.S(18) - rs, row.Rect.Y + (RowH - rs) / 2, rs, rs);
-                    // 悬停时右边出现"完成"按钮(已完成的是"恢复"),左边是"⋯"
-                    int bw = Gfx.S(78), bh = Gfx.S(32);
-                    row.DoneBtn = new Rectangle(row.Rect.Right - Gfx.S(16) - bw, row.Rect.Y + (RowH - bh) / 2, bw, bh);
-                    row.More = new Rectangle(row.DoneBtn.X - Gfx.S(6) - Gfx.S(30), row.Rect.Y + (RowH - Gfx.S(30)) / 2, Gfx.S(30), Gfx.S(30));
+                    int cs = Gfx.S(22);
+                    row.Check = new Rectangle(x + Gfx.S(16), y + (RowH - cs) / 2, cs, cs);
+                    row.More = new Rectangle(x + w - Gfx.S(14) - Gfx.S(28), y + (RowH - Gfx.S(28)) / 2, Gfx.S(28), Gfx.S(28));
                     rows.Add(row);
-                    y += RowH + Gfx.S(10);
+                    y += RowH;
                 }
-                y += Gfx.S(8);
+                y += Gfx.S(22);
             }
-            contentH = y + Gfx.S(10);
+            contentH = y;
             scroll = Math.Max(0, Math.Min(scroll, contentH - Height));
         }
 
@@ -13181,18 +13195,25 @@ namespace Glean
             g.SmoothingMode = SmoothingMode.AntiAlias;
             Build();
 
-            // 顶部标题(固定不滚动)
-            int active = Timeline.ActiveCount;
-            int soon = Timeline.Items.Count(r => !r.Done && r.DaysLeft <= 3);
-
             GraphicsState st = g.Save();
-            g.SetClip(new Rectangle(0, TopH - Gfx.S(6), Width, Height));
+            g.SetClip(new Rectangle(0, TopH - Gfx.S(8), Width, Height));
             g.TranslateTransform(0, -scroll);
-            foreach (KeyValuePair<int, string> h in headers)
+            foreach (Group gp in groups)
             {
-                bool warn = h.Value.StartsWith("已过期") || h.Value.StartsWith("今天");
-                TextRenderer.DrawText(g, h.Value, SetPal.Header, new Rectangle(Gfx.S(26), h.Key + Gfx.S(4), Width - Gfx.S(52), Gfx.S(22)),
-                    warn ? Timeline.Red : t.Sub, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
+                if (gp.Box.Bottom - scroll < TopH - Gfx.S(40) || gp.HeaderY - scroll > Height) continue;
+                bool warn = gp.Name == "已过期" || gp.Name == "今天";
+                Color hc = warn ? Timeline.Red : t.Text;
+                int hw = TextRenderer.MeasureText(gp.Name, GroupFont, Size.Empty, TextFormatFlags.NoPadding).Width;
+                TextRenderer.DrawText(g, gp.Name, GroupFont, new Rectangle(gp.Box.X + Gfx.S(6), gp.HeaderY, hw + Gfx.S(4), Gfx.S(24)), hc, SetPal.Back, Line);
+                TextRenderer.DrawText(g, gp.Count.ToString(CultureInfo.InvariantCulture), Gfx.Small,
+                    new Rectangle(gp.Box.X + Gfx.S(6) + hw + Gfx.S(8), gp.HeaderY, Gfx.S(40), Gfx.S(24)), t.Sub, SetPal.Back, Line);
+                // 分组卡片:圆角、细边、极淡的投影
+                Rectangle box = gp.Box;
+                if (!t.Dark)
+                    using (GraphicsPath sp = Gfx.Round(new Rectangle(box.X, box.Y + 1, box.Width, box.Height), 12))
+                    using (SolidBrush sb = new SolidBrush(Color.FromArgb(10, 0, 0, 0))) g.FillPath(sb, sp);
+                Gfx.FillRound(g, SetPal.Card, box, 12);
+                Gfx.DrawRound(g, t.Dark ? Color.FromArgb(18, 255, 255, 255) : Color.FromArgb(16, 0, 0, 0), box, 12, 1f);
             }
             foreach (Row row in rows)
             {
@@ -13201,13 +13222,15 @@ namespace Glean
             }
             g.Restore(st);
 
-            // 顶部
-            using (SolidBrush b = new SolidBrush(SetPal.Back)) g.FillRectangle(b, 0, 0, Width, TopH - Gfx.S(6));
-            TextRenderer.DrawText(g, "时光轴", SetPal.PageTitle, new Point(Gfx.S(22), Gfx.S(18)), t.Text, TextFormatFlags.NoPrefix | Keep);
+            // 顶部(固定不滚动)
+            int active = Timeline.ActiveCount;
+            int soon = Timeline.Items.Count(r => !r.Done && r.DaysLeft <= 3);
+            using (SolidBrush b = new SolidBrush(SetPal.Back)) g.FillRectangle(b, 0, 0, Width, TopH - Gfx.S(8));
+            TextRenderer.DrawText(g, "时光轴", SetPal.PageTitle, new Point(Gfx.S(22), Gfx.S(20)), t.Text, TextFormatFlags.NoPrefix);
             string sub = active == 0 ? "没有进行中的提醒" : active + " 个进行中" + (soon > 0 ? "  ·  " + soon + " 个三天内到期" : "");
-            TextRenderer.DrawText(g, sub, Gfx.Small, new Point(Gfx.S(26), Gfx.S(58)), t.Sub, TextFormatFlags.NoPrefix | Keep);
+            TextRenderer.DrawText(g, sub, Gfx.Small, new Point(Gfx.S(25), Gfx.S(60)), t.Sub, TextFormatFlags.NoPrefix);
             if (scroll > 0)
-                using (Pen p = new Pen(SetPal.Sep)) g.DrawLine(p, 0, TopH - Gfx.S(7), Width, TopH - Gfx.S(7));
+                using (Pen p = new Pen(SetPal.Sep)) g.DrawLine(p, 0, TopH - Gfx.S(9), Width, TopH - Gfx.S(9));
 
             if (rows.Count == 0) DrawEmpty(g);
 
@@ -13217,7 +13240,7 @@ namespace Glean
                 int vh = Height - TopH;
                 int th = Math.Max(Gfx.S(30), vh * vh / Math.Max(1, contentH - TopH));
                 int ty = TopH + (int)((long)(vh - th) * scroll / Math.Max(1, contentH - Height));
-                Gfx.FillRound(g, Color.FromArgb(t.Dark ? 90 : 70, t.Text), new Rectangle(Width - Gfx.S(8), ty, Gfx.S(5), th), 3);
+                Gfx.FillRound(g, Color.FromArgb(t.Dark ? 80 : 60, t.Text), new Rectangle(Width - Gfx.S(7), ty, Gfx.S(4), th), 2);
             }
         }
 
@@ -13229,10 +13252,20 @@ namespace Glean
             Gfx.DrawGlow(g, glow, t.Accent, Gfx.S(40));
             Timeline.DrawCalendar(g, new Rectangle(cx - Gfx.S(28), cy - Gfx.S(28), Gfx.S(56), Gfx.S(56)), DateTime.Today.Day, t.Accent);
             TextRenderer.DrawText(g, "还没有提醒", Gfx.HeaderFont, new Rectangle(0, cy + Gfx.S(44), Width, Gfx.S(26)), t.Text,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | Keep);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
             TextRenderer.DrawText(g, "复制带有到期日期的文字时,拾光会问你要不要提醒;\n也可以点右上角的“新建”,或在剪切板卡片上右键 → 加入时光轴。", Gfx.Small,
                 new Rectangle(Gfx.S(30), cy + Gfx.S(76), Width - Gfx.S(60), Gfx.S(44)), t.Sub,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | Keep);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        }
+
+        // 剩余天数的小胶囊:"44 天"、"明天"、"今天"、"逾期 2 天"
+        static string ChipText(Reminder r)
+        {
+            int n = r.DaysLeft;
+            if (n < 0) return "逾期 " + (-n) + " 天";
+            if (n == 0) return "今天";
+            if (n == 1) return "明天";
+            return n + " 天";
         }
 
         void DrawRow(Graphics g, Row row)
@@ -13240,108 +13273,167 @@ namespace Glean
             Theme t = Theme.Cur;
             Reminder r = row.R;
             Rectangle rc = row.Rect;
-            bool hov = row.R == hoverR;
+            bool hov = r == hoverR;
+            double tickT = -1;
+            if (ticking.ContainsKey(r)) tickT = Math.Min(1, (Gfx.Ms - ticking[r]) / 260.0);
+            bool shownDone = r.Done ^ (tickT >= 0);   // 动画中按"已经切换后"的样子画
             Color card = SetPal.Card;
-            if (hov) card = Theme.Blend(card, t.Text, t.Dark ? 0.04 : 0.02);
-            Gfx.FillRound(g, card, rc, 14);
-            if (!t.Dark) Gfx.DrawRound(g, Color.FromArgb(14, 0, 0, 0), rc, 14, 1f);
-            Color urg = r.Done ? t.Sub : Timeline.Urgency(r.Due);
-            Color textC = r.Done ? t.Sub : t.Text;
 
-            // 日期块
-            Rectangle dc = new Rectangle(rc.X + Gfx.S(8), rc.Y, Gfx.S(70), rc.Height);
-            // 左边大字:还剩几天;已完成的就淡淡地显示一个勾
-            string big = r.Done ? "✓" : r.BigText;
-            Font bigF = r.Done ? Timeline.WordFont : r.BigIsWord ? Timeline.WordFont : (big.Length >= 3 ? Timeline.DayFontSmall : Timeline.DayFont);
-            TextRenderer.DrawText(g, big, bigF, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(12), dc.Width + Gfx.S(8), Gfx.S(40)),
-                r.Done ? t.Sub : urg, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
-            TextRenderer.DrawText(g, r.Done ? "已完成" : r.BigSub, Gfx.Small, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(54), dc.Width + Gfx.S(8), Gfx.S(18)),
-                r.DaysLeft < 0 && !r.Done ? Timeline.Red : t.Sub, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep);
-            using (Pen sep = new Pen(SetPal.Sep)) g.DrawLine(sep, dc.Right + Gfx.S(6), rc.Y + Gfx.S(18), dc.Right + Gfx.S(6), rc.Bottom - Gfx.S(18));
-
-            int tx = dc.Right + Gfx.S(20);
-            int tr = (hov ? row.More.X : row.Ring.X) - Gfx.S(10);
-            string head = r.DateLine + "  ·  " + r.Label;
-            TextRenderer.DrawText(g, head, Gfx.Bold, new Rectangle(tx, rc.Y + Gfx.S(12), tr - tx, Gfx.S(22)), textC, card,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-            TextRenderer.DrawText(g, r.Snippet(90), Gfx.UI, new Rectangle(tx, rc.Y + Gfx.S(34), tr - tx, Gfx.S(22)), r.Done ? t.Sub : Theme.Blend(t.Text, t.Sub, 0.35), card,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-            string meta = r.Done ? (r.DoneAt.Year > 2000 ? "完成于 " + DueDate.Describe(r.DoneAt, true) : "")
-                : (r.Notified && r.At <= DateTime.Now ? "已提醒" : "提醒:" + DueDate.Describe(r.At, true) + " " + DueDate.Week(r.At));
-            string extra = !string.IsNullOrEmpty(r.Note) ? "备注:" + r.Note : r.App;
-            if (!string.IsNullOrEmpty(extra)) meta += (meta.Length > 0 ? "  ·  " : "") + extra;
-            TextRenderer.DrawText(g, meta, Gfx.Small, new Rectangle(tx, rc.Y + Gfx.S(58), tr - tx, Gfx.S(20)), t.Sub, card,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | Keep | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-
-            // 右边:平时是倒计时圆环(只看不点);鼠标移到这一条上,换成明确的"完成"按钮
-            Rectangle ring = row.Ring;
+            // 悬停:整行淡淡地亮一点(只在卡片里面)
             if (hov)
             {
-                Rectangle db = row.DoneBtn;
-                bool hot = hoverPart == 1;
-                Color green = Color.FromArgb(52, 168, 98);
-                Color fill = r.Done ? (hot ? t.Border : t.Input) : (hot ? Theme.Blend(green, Color.Black, 0.08) : green);
-                Gfx.FillRound(g, fill, db, 99);
-                Color ink = r.Done ? t.Text : Color.White;
-                string label = r.Done ? "恢复" : "完成";
-                int lw = TextRenderer.MeasureText(label, Gfx.UI, Size.Empty, TextFormatFlags.NoPadding).Width;
-                int iw = r.Done ? 0 : Gfx.S(14) + Gfx.S(5);
-                int lx = db.X + (db.Width - lw - iw) / 2;
-                if (!r.Done) Check(g, new Rectangle(lx - Gfx.S(3), db.Y + (db.Height - Gfx.S(20)) / 2, Gfx.S(20), Gfx.S(20)), ink);
-                TextRenderer.DrawText(g, label, Gfx.UI, new Rectangle(lx + iw, db.Y, lw + Gfx.S(4), db.Height), ink, fill,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | Keep);
-            }
-            else if (r.Done)
-            {
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(52, 168, 98))) g.FillEllipse(b, Shrink(ring, Gfx.S(6)));
-                Check(g, Shrink(ring, Gfx.S(6)), Color.White);
-            }
-            else
-            {
-                Color urgR = Timeline.Urgency(r.Due);
-                double total = Math.Max(1, (r.Due - r.Created).TotalMinutes);
-                double left = Math.Max(0, (r.Due - DateTime.Now).TotalMinutes);
-                float frac = (float)Math.Max(0.02, Math.Min(1, left / total));
-                Rectangle rr = Shrink(ring, Gfx.S(2));
-                using (Pen bg = new Pen(Color.FromArgb(t.Dark ? 50 : 30, t.Text), Gfx.F(3.2f))) g.DrawEllipse(bg, rr);
-                using (Pen fg = new Pen(urgR, Gfx.F(3.2f)))
+                card = Theme.Blend(SetPal.Card, t.Text, t.Dark ? 0.045 : 0.03);
+                using (GraphicsPath box = Gfx.Round(groups.First(gp => gp.Box.Contains(rc.Location)).Box, 12))
                 {
-                    fg.StartCap = fg.EndCap = LineCap.Round;
-                    g.DrawArc(fg, rr, -90, 360 * frac);
+                    Region old = g.Clip;
+                    g.SetClip(box, CombineMode.Intersect);
+                    using (SolidBrush b = new SolidBrush(card)) g.FillRectangle(b, rc);
+                    g.Clip = old;
                 }
+            }
+            int tx = row.Check.Right + Gfx.S(14);
+            if (!row.Last)
+                using (Pen sep = new Pen(SetPal.Sep)) g.DrawLine(sep, tx, rc.Bottom - 1, rc.Right - Gfx.S(14), rc.Bottom - 1);
+
+            // 圆形勾选框(macOS 提醒事项的样子)
+            DrawCheck(g, row.Check, shownDone, hov && hoverPart == 1, tickT, card);
+
+            // 右边:剩余天数胶囊(已完成的显示完成日期);悬停时左边多一个"⋯"
+            int right = rc.Right - Gfx.S(14);
+            if (hov) right = row.More.X - Gfx.S(6);
+            if (!shownDone)
+            {
+                string chip = ChipText(r);
+                int n = r.DaysLeft;
+                Color fg = n <= 0 ? Timeline.Red : n <= 3 ? Timeline.Amber : t.Sub;
+                Color bg = n <= 3 ? Color.FromArgb(t.Dark ? 46 : 30, fg) : Theme.Blend(SetPal.Card, t.Text, t.Dark ? 0.08 : 0.05);
+                int cw = TextRenderer.MeasureText(chip, ChipFont, Size.Empty, TextFormatFlags.NoPadding).Width + Gfx.S(18);
+                Rectangle cr = new Rectangle(right - cw, rc.Y + (rc.Height - Gfx.S(24)) / 2, cw, Gfx.S(24));
+                row.Chip = cr;
+                Gfx.FillRound(g, bg, cr, 99);
+                TextRenderer.DrawText(g, chip, ChipFont, cr, fg, Theme.Blend(card, fg, bg.A / 255.0),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | Keep);
+                right = cr.X - Gfx.S(12);
+            }
+            else if (r.DoneAt.Year > 2000)
+            {
+                string d = DueDate.Md(r.DoneAt) + " 完成";
+                int dw = TextRenderer.MeasureText(d, Gfx.Small, Size.Empty, TextFormatFlags.NoPadding).Width;
+                TextRenderer.DrawText(g, d, Gfx.Small, new Rectangle(right - dw, rc.Y, dw + Gfx.S(2), rc.Height), t.Sub, card, Line);
+                right -= dw + Gfx.S(12);
             }
             if (hov)
             {
                 bool mh = hoverPart == 2;
-                if (mh) Gfx.FillRound(g, t.Hover, row.More, 99);
+                if (mh) Gfx.FillRound(g, Theme.Blend(card, t.Text, 0.08), row.More, 99);
                 int cx = row.More.X + row.More.Width / 2, cy = row.More.Y + row.More.Height / 2;
-                using (SolidBrush b = new SolidBrush(t.Sub))
-                    for (int k = -1; k <= 1; k++) g.FillEllipse(b, cx + k * Gfx.S(5) - Gfx.S(2), cy - Gfx.S(2), Gfx.S(4), Gfx.S(4));
+                using (SolidBrush b = new SolidBrush(mh ? t.Text : t.Sub))
+                    for (int k = -1; k <= 1; k++) g.FillEllipse(b, cx + k * Gfx.S(5) - Gfx.F(1.75f), cy - Gfx.F(1.75f), Gfx.F(3.5f), Gfx.F(3.5f));
+            }
+
+            // 文字:第一行内容,第二行 日期 · 类型 · 提醒时间 · 备注
+            int tw = right - tx;
+            Color titleC = shownDone ? t.Sub : t.Text;
+            TextRenderer.DrawText(g, r.Snippet(80), TitleFont, new Rectangle(tx, rc.Y + Gfx.S(10), tw, Gfx.S(24)), titleC, card, Line);
+            int my = rc.Y + Gfx.S(35), mh2 = Gfx.S(18);
+            int x = tx;
+            Color dateC = shownDone ? t.Sub : (r.DaysLeft <= 0 ? Timeline.Red : r.DaysLeft <= 3 ? Timeline.Amber : t.Sub);
+            string datePart = r.DateLine + " · " + r.Label;
+            x = Seg(g, datePart, dateC, card, x, my, mh2, tx + tw);
+            string rest = "";
+            if (!shownDone) rest = r.Notified && r.At <= DateTime.Now ? "已提醒" : "提醒 " + DueDate.Describe(r.At, true);
+            if (!string.IsNullOrEmpty(r.Note)) rest += (rest.Length > 0 ? " · " : "") + r.Note;
+            else if (!string.IsNullOrEmpty(r.App)) rest += (rest.Length > 0 ? " · " : "") + r.App;
+            if (rest.Length > 0) Seg(g, "   " + rest, t.Sub, card, x, my, mh2, tx + tw);
+        }
+
+        static int Seg(Graphics g, string s, Color c, Color back, int x, int y, int h, int maxRight)
+        {
+            if (x >= maxRight - Gfx.S(10)) return x;
+            int w = Math.Min(maxRight - x, TextRenderer.MeasureText(s, Gfx.Small, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width + Gfx.S(1));
+            TextRenderer.DrawText(g, s, Gfx.Small, new Rectangle(x, y, w, h), c, back, Line);
+            return x + w;
+        }
+
+        // 勾选框:空心圆 → 悬停时圆里浮出淡淡的勾 → 点下去填满主题色,勾"画"出来
+        static void DrawCheck(Graphics g, Rectangle r, bool done, bool hot, double tickT, Color back)
+        {
+            Theme t = Theme.Cur;
+            RectangleF rf = new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1);
+            if (done)
+            {
+                float k = tickT >= 0 ? (float)(1 - Math.Pow(1 - tickT, 3)) : 1f;
+                float grow = 0.6f + 0.4f * k;
+                RectangleF fr = new RectangleF(rf.X + rf.Width * (1 - grow) / 2, rf.Y + rf.Height * (1 - grow) / 2, rf.Width * grow, rf.Height * grow);
+                using (SolidBrush b = new SolidBrush(hot ? Theme.Blend(t.Accent, Color.Black, 0.1) : t.Accent)) g.FillEllipse(b, fr);
+                Tick(g, rf, Color.White, k, Gfx.F(1.9f));
+                return;
+            }
+            Color ring = hot ? t.Accent : (t.Dark ? Color.FromArgb(110, 255, 255, 255) : Color.FromArgb(70, 0, 0, 0));
+            using (Pen p = new Pen(ring, Gfx.F(1.5f))) g.DrawEllipse(p, rf);
+            if (hot)
+            {
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(t.Dark ? 40 : 26, t.Accent))) g.FillEllipse(b, rf);
+                Tick(g, rf, Color.FromArgb(170, t.Accent), 1f, Gfx.F(1.7f));
             }
         }
 
-        static Rectangle Shrink(Rectangle r, int k) { r.Inflate(-k, -k); return r; }
-
-        static void Check(Graphics g, Rectangle r, Color c)
+        // 勾:按进度 k(0~1)从左往右"画"出来
+        static void Tick(Graphics g, RectangleF r, Color c, float k, float width)
         {
-            using (Pen p = new Pen(c, Gfx.F(2.4f)))
+            PointF a = new PointF(r.X + r.Width * 0.29f, r.Y + r.Height * 0.52f);
+            PointF b = new PointF(r.X + r.Width * 0.44f, r.Y + r.Height * 0.66f);
+            PointF d = new PointF(r.X + r.Width * 0.72f, r.Y + r.Height * 0.36f);
+            using (Pen p = new Pen(c, width))
             {
                 p.StartCap = p.EndCap = LineCap.Round;
                 p.LineJoin = LineJoin.Round;
-                float s = r.Width;
-                g.DrawLines(p, new PointF[] { new PointF(r.X + s * 0.28f, r.Y + s * 0.52f), new PointF(r.X + s * 0.44f, r.Y + s * 0.67f), new PointF(r.X + s * 0.72f, r.Y + s * 0.36f) });
+                float l1 = 0.35f;
+                if (k <= l1)
+                {
+                    float q = k / l1;
+                    g.DrawLine(p, a, new PointF(a.X + (b.X - a.X) * q, a.Y + (b.Y - a.Y) * q));
+                }
+                else
+                {
+                    float q = (k - l1) / (1 - l1);
+                    g.DrawLines(p, new PointF[] { a, b, new PointF(b.X + (d.X - b.X) * q, b.Y + (d.Y - b.Y) * q) });
+                }
             }
+        }
+
+        void StepAnim()
+        {
+            List<Reminder> finished = new List<Reminder>();
+            foreach (KeyValuePair<Reminder, double> kv in ticking)
+                if (Gfx.Ms - kv.Value > 650) finished.Add(kv.Key);   // 勾画完后停一下再挪到"已完成"
+            foreach (Reminder r in finished)
+            {
+                ticking.Remove(r);
+                Timeline.Complete(r, !r.Done);
+            }
+            if (ticking.Count == 0) anim.Stop();
+            Invalidate();
+        }
+
+        void Toggle(Reminder r)
+        {
+            if (ticking.ContainsKey(r)) return;
+            ticking[r] = Gfx.Ms;
+            anim.Start();
+            Invalidate();
         }
 
         Row HitRow(Point p, out int part)
         {
             part = 0;
-            if (p.Y < TopH - Gfx.S(6)) return null;
+            if (p.Y < TopH - Gfx.S(8)) return null;
             Point q = new Point(p.X, p.Y + scroll);
             foreach (Row r in rows)
             {
                 if (!r.Rect.Contains(q)) continue;
-                if (r.DoneBtn.Contains(q)) part = 1;
+                Rectangle ck = r.Check; ck.Inflate(Gfx.S(8), Gfx.S(8));
+                if (ck.Contains(q)) part = 1;
                 else if (r.More.Contains(q)) part = 2;
                 return r;
             }
@@ -13379,7 +13471,7 @@ namespace Glean
             Row row = HitRow(e.Location, out part);
             if (row == null) return;
             Reminder r = row.R;
-            if (e.Button == MouseButtons.Left && part == 1) { Timeline.Complete(r, !r.Done); return; }
+            if (e.Button == MouseButtons.Left && part == 1) { Toggle(r); return; }
             if (e.Button == MouseButtons.Left && part == 0 && !r.Done) { ReminderEditor.Edit(FindForm(), r, null); return; }
             Menu(r, e.Location);
         }
@@ -13390,7 +13482,7 @@ namespace Glean
             if (r.Done) m.Items.Add("恢复为进行中", null, delegate { Timeline.Complete(r, false); });
             else
             {
-                m.Items.Add("标记完成", null, delegate { Timeline.Complete(r, true); });
+                m.Items.Add("标记完成", null, delegate { Toggle(r); });
                 m.Items.Add("编辑…", null, delegate { ReminderEditor.Edit(FindForm(), r, null); });
                 ToolStripMenuItem when = new ToolStripMenuItem("修改提醒时间");
                 Timeline.FillChoicesMenu(when.DropDownItems, r, delegate(DateTime v) { Timeline.Reschedule(r, v); });

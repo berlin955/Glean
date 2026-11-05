@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -8,104 +9,111 @@ using System.Threading;
 using System.Windows.Forms;
 static class TexTest
 {
-    static void Out(string s) { File.AppendAllText(@"C:\gl-out.txt", s + "\r\n"); }
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr d, int x, int y, int w, int h, IntPtr s, int sx, int sy, int op);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    static void Out(string s) { File.AppendAllText("out.txt", s + "\r\n"); }
     static void Pump(int ms) { Stopwatch w = Stopwatch.StartNew(); while (w.ElapsedMilliseconds < ms) { Application.DoEvents(); Thread.Sleep(5); } }
     static readonly BindingFlags NP = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
-
-    static void Setup(string dir)
+    static void Shot(string name, Rectangle r)
     {
-        if (Directory.Exists(dir)) return;
-        Directory.CreateDirectory(dir);
-        Glean.History h = new Glean.History(dir);
-        string[] apps = { @"C:\Windows\notepad.exe", @"C:\Windows\explorer.exe", @"C:\Windows\System32\cmd.exe", @"C:\Windows\System32\mspaint.exe", @"C:\Windows\regedit.exe" };
-        Random rnd = new Random(1);
-        for (int i = 0; i < 160; i++)
+        using (Bitmap b = new Bitmap(r.Width, r.Height))
         {
-            Glean.Item it;
-            if (i % 8 == 3)
+            using (Graphics g = Graphics.FromImage(b))
             {
-                using (Bitmap b = new Bitmap(1920, 1080))
-                {
-                    using (Graphics g = Graphics.FromImage(b))
-                    {
-                        g.Clear(Color.FromArgb(rnd.Next(256), rnd.Next(256), rnd.Next(256)));
-                        for (int k = 0; k < 200; k++) using (SolidBrush br = new SolidBrush(Color.FromArgb(rnd.Next(256), rnd.Next(256), rnd.Next(256)))) g.FillEllipse(br, rnd.Next(1900), rnd.Next(1060), rnd.Next(300), rnd.Next(300));
-                    }
-                    using (MemoryStream ms = new MemoryStream()) { b.Save(ms, ImageFormat.Png); byte[] png = ms.ToArray(); it = h.AddImagePng(png, Glean.Util.Md5Short(png), DateTime.Now); }
-                }
+                IntPtr dst = g.GetHdc(); IntPtr src = GetDC(IntPtr.Zero);
+                BitBlt(dst, 0, 0, r.Width, r.Height, src, r.X, r.Y, 0x00CC0020 | 0x40000000);
+                ReleaseDC(IntPtr.Zero, src); g.ReleaseHdc(dst);
             }
-            else it = h.AddText("第 " + i + " 条记录:这是一段比较长的文字,用来模拟平时复制的内容。" + new string('字', rnd.Next(5, 200)));
-            if (it != null) h.SetSource(it, apps[i % apps.Length], "App" + (i % apps.Length));
+            using (MemoryStream ms = new MemoryStream())
+            {
+                b.Save(ms, ImageFormat.Png);
+                string all = Convert.ToBase64String(ms.ToArray());
+                for (int k = 0, part = 0; k < all.Length; k += 6000, part++)
+                    Out("PNGPART " + name + " " + part.ToString("000") + " " + all.Substring(k, Math.Min(6000, all.Length - k)));
+            }
         }
-        h.FinishPendingDelete();
     }
-
-    [STAThread]
-    static int Main(string[] args)
+    static void Case(string text, string expect)
     {
-        string mode = args.Length > 0 ? args[0] : "parent";
-        string dir = @"C:\gl-hist";
-        if (mode == "parent")
-        {
-            Stopwatch s0 = Stopwatch.StartNew();
-            Setup(dir);
-            Out("setup " + s0.ElapsedMilliseconds);
-            foreach (string m in new string[] { "cold", "prewarm", "cold", "prewarm" })
-            {
-                Process p = Process.Start(Application.ExecutablePath, m);
-                p.WaitForExit();
-            }
-            File.Copy(@"C:\gl-out.txt", "out.txt", true);
-            return 0;
-        }
+        DateTime now = new DateTime(2026, 11, 5, 10, 0, 0);
+        Glean.DueDate.Hit h = Glean.DueDate.Find(text, now);
+        string got = h == null ? "null" : h.Date.ToString(h.HasTime ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd") + (h.Strong ? " S " : " W ") + h.Label;
+        Out((got.StartsWith(expect) ? "PASS " : "FAIL ") + text.Replace("\n", "\\n") + "  =>  " + got + "   (want " + expect + ")");
+    }
+    static Glean.Reminder R(string text, int days, int atDays, string label, bool done, bool hasTime)
+    {
+        Glean.Reminder r = new Glean.Reminder();
+        r.Text = text; r.Due = DateTime.Today.AddDays(days).AddHours(hasTime ? 15 : 0); r.HasTime = hasTime;
+        r.At = DateTime.Today.AddDays(atDays).AddHours(9); r.Label = label; r.App = "微信"; r.Done = done;
+        r.Created = DateTime.Now.AddDays(-5); r.Notified = true;
+        if (done) r.DoneAt = DateTime.Now.AddHours(-3);
+        return r;
+    }
+    [STAThread]
+    static int Main()
+    {
+        Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e) { Out("UI-EXCEPTION " + e.Exception); };
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         try
         {
-            Stopwatch total = Stopwatch.StartNew();
             Glean.Native.SetProcessDPIAware();
             Glean.Gfx.InitDpi();
-            Glean.Config.Load();
-            Glean.Config.Layout = 1;
-            Glean.Theme.Refresh();
             Application.EnableVisualStyles();
-            Glean.History hist = new Glean.History(dir);
-            Out("[" + mode + "] history load " + total.ElapsedMilliseconds + " items " + hist.Items.Count);
-            Stopwatch sw = Stopwatch.StartNew();
-            Glean.ShelfForm shelf = new Glean.ShelfForm(null, hist);
-            Out("[" + mode + "] ctor " + sw.ElapsedMilliseconds);
-            if (mode == "prewarm")
+            Case("您的域名 example.com 将于2026年11月20日到期，请及时续费", "2026-11-20 S 到期");
+            Case("信用卡还款日：11月25日", "2026-11-25 S 还款");
+            Case("会议时间：明天下午3点", "2026-11-06 15:00 S 会议");
+            Case("报名截止 12/1", "2026-12-01 S 截止");
+            Case("今天天气不错", "null");
+            Case("版本 1.2.3 发布", "null");
+            Case("11月20日我们去吃饭", "2026-11-20 W");
+            Case("合同有效期至2025-03-01", "null");
+            Case("下周三之前提交报告", "2026-11-11 S 截止");
+            Case("发票请在3天内提交", "2026-11-08 S 提交");
+            Case("订单号 20261120123456", "null");
+            Case("2026-11-20 10:01:02 INFO a\n2026-11-21 10:01:02 INFO b\n2026-11-22 10:01:02 INFO c\n2026-11-23 x\n2026-11-24 y\n2026-11-25 z", "null");
+            Case("Your subscription expires on 2026-12-01", "2026-12-01 S 到期");
+            Case("due to the weather, 12/25", "null");
+            Case("本月底前缴纳物业费", "2026-11-30 S 缴费");
+            Case("10月30日已经到期了", "null");
+            Case("1月3日还款", "2027-01-03 S 还款");
+            Case("面试安排在11月12日 14:30，请准时", "2026-11-12 14:30 S 面试");
+            Case("手机号 13800138000", "null");
+            Case("周五前完成", "2026-11-06 S 截止");
+            Case("一共 3/4 的人同意", "null");
+
+            foreach (int mode in new int[] { 1, 2 })
             {
-                Pump(500);
-                sw.Restart();
-                shelf.Prewarm();
-                Out("[" + mode + "] prewarm " + sw.ElapsedMilliseconds);
-                Pump(1500);   // 让后台缩略图跑完
+                Glean.Config.ThemeMode = mode; Glean.Theme.Refresh();
+                typeof(Glean.Timeline).GetField("loaded", NP).SetValue(null, true);
+                Glean.Timeline.Items.Clear();
+                Glean.Timeline.Items.Add(R("物业费缴纳截止,逾期将产生滞纳金", 0, 0, "缴费", false, false));
+                Glean.Timeline.Items.Add(R("信用卡账单 ¥3,280.00 最后还款日", 2, 1, "还款", false, false));
+                Glean.Timeline.Items.Add(R("2026年12月19日老婆生日", 44, 41, "生日", false, false));
+                Glean.Timeline.Items.Add(R("提交季度报销单据", -3, -4, "截止", true, false));
+                Glean.Timeline.Open(); Pump(800);
+                Form tw = null;
+                foreach (Form f in Application.OpenForms) if (f is Glean.TimelineForm) tw = f;
+                tw.Location = new Point(20, 20); Pump(300);
+                Control view = tw.Controls[0];
+                System.Collections.IList rows = (System.Collections.IList)view.GetType().GetField("rows", NP).GetValue(view);
+                view.GetType().GetField("hoverRow", NP).SetValue(view, rows[1]);
+                view.GetType().GetField("hoverPart", NP).SetValue(view, 0);
+                view.Invalidate(); Pump(300);
+                Shot("hover-" + mode, tw.Bounds);
+                view.GetType().GetField("hoverRow", NP).SetValue(view, rows[2]);
+                view.GetType().GetField("hoverPart", NP).SetValue(view, 1);
+                view.Invalidate(); Pump(300);
+                Shot("hoverbtn-" + mode, tw.Bounds);
+                view.GetType().GetField("hoverRow", NP).SetValue(view, rows[3]);
+                view.GetType().GetField("hoverPart", NP).SetValue(view, 0);
+                view.Invalidate(); Pump(300);
+                Shot("hoverdone-" + mode, tw.Bounds);
+                tw.Close(); Pump(200);
             }
-            Glean.Perf.On = true;
-            sw.Restart();
-            shelf.ShowAt();
-            long showAt = sw.ElapsedMilliseconds;
-            shelf.Update();
-            long paint = sw.ElapsedMilliseconds;
-            Out("[" + mode + "] ShowAt " + showAt + " ms, first paint done at " + paint + " ms; marks: " + string.Join(", ", Glean.Perf.Log.ToArray()));
-            Glean.Perf.Log.Clear();
-            // 统计滑出过程中界面卡住的最长一次
-            long worst = 0, last = sw.ElapsedMilliseconds;
-            while (sw.ElapsedMilliseconds < paint + 900)
-            {
-                Application.DoEvents();
-                long now = sw.ElapsedMilliseconds;
-                worst = Math.Max(worst, now - last);
-                last = now;
-                Thread.Sleep(1);
-            }
-            Out("[" + mode + "] worst UI stall during slide " + worst + " ms");
-            shelf.HideNow();
-            Pump(300);
-            sw.Restart();
-            shelf.ShowAt(); shelf.Update();
-            Out("[" + mode + "] second open " + sw.ElapsedMilliseconds + " ms; marks: " + string.Join(", ", Glean.Perf.Log.ToArray()));
         }
         catch (Exception ex) { Out("ERROR " + ex); }
+        Out("DONE");
         return 0;
     }
 }

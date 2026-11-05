@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.25.0.0")]
-[assembly: AssemblyFileVersion("0.25.0.0")]
+[assembly: AssemblyVersion("0.26.0.0")]
+[assembly: AssemblyFileVersion("0.26.0.0")]
 
 namespace Glean
 {
@@ -69,7 +69,12 @@ namespace Glean
         public static string DataDir = "";         // 自定义数据文件夹,空 = 默认
         public static string IgnoreApps = "keepass,keepassxc,1password,bitwarden,lastpass,dashlane,enpass";
         public static int KeepDays = 0;            // 自动清理 N 天前的记录,0 = 永久保留
-        public const string Version = "0.25";
+        public static bool TimelineOn = false;     // 时光轴(到期提醒),默认关闭
+        public static int TimelineAsk = 0;         // 识别到日期时:0 弹出询问  1 只在卡片上标记
+        public static int LeadDays = 1;            // 默认提前:0 当天  1 一天  3 三天
+        public static int RemindHour = 9;          // 提醒的钟点
+        public static bool TimelineSound = true;   // 提醒时响一声
+        public const string Version = "0.26";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -181,6 +186,11 @@ namespace Glean
                             case "datadir": DataDir = v; break;
                             case "ignore": IgnoreApps = v; break;
                             case "keepdays": KeepDays = Math.Max(0, int.Parse(v)); break;
+                            case "timeline": TimelineOn = v == "1"; break;
+                            case "timelineask": TimelineAsk = v == "1" ? 1 : 0; break;
+                            case "leaddays": LeadDays = v == "0" ? 0 : v == "3" ? 3 : 1; break;
+                            case "remindhour": RemindHour = Math.Max(0, Math.Min(23, int.Parse(v))); break;
+                            case "timelinesound": TimelineSound = v == "1"; break;
                         }
                     }
                     catch { }
@@ -223,7 +233,12 @@ namespace Glean
                     "accent=" + AccentIndex,
                     "datadir=" + DataDir,
                     "ignore=" + IgnoreApps,
-                    "keepdays=" + KeepDays
+                    "keepdays=" + KeepDays,
+                    "timeline=" + (TimelineOn ? "1" : "0"),
+                    "timelineask=" + TimelineAsk,
+                    "leaddays=" + LeadDays,
+                    "remindhour=" + RemindHour,
+                    "timelinesound=" + (TimelineSound ? "1" : "0")
                 };
                 File.WriteAllLines(SettingsFile, lines, new UTF8Encoding(false));
             }
@@ -1129,6 +1144,8 @@ namespace Glean
         public bool IsImage, IsFiles, Pinned;
         public Courier.Hit CourierHit;     // 文字里识别出的快递单号(内容不变,查一次就记住)
         public bool CourierChecked;
+        public DueDate.Hit DueHit;          // 文字里识别出的到期日(时光轴开着时才算)
+        public DateTime DueDay;             // 哪天算的(过了一天要重新算"是不是将来")
         public string FilePath, Hash, Text;
         public string AppPath, AppName;       // 来源程序
         public int CustomColor;               // 自定义的卡片标题颜色(0 = 默认)
@@ -3857,6 +3874,13 @@ namespace Glean
         readonly Segmented maxSeg = new Segmented();
         readonly Segmented daysSeg = new Segmented();
         readonly SearchBox ignoreBox = new SearchBox();
+        readonly Toggle tTimeline = new Toggle();
+        readonly Toggle tTimeSound = new Toggle();
+        readonly Segmented askSeg = new Segmented();
+        readonly Segmented leadSeg = new Segmented();
+        readonly Segmented hourSeg = new Segmented();
+        static readonly int[] LeadOptions = new int[] { 0, 1, 3 };
+        static readonly int[] HourOptions = new int[] { 8, 9, 10, 20 };
 
         public bool MoveExisting;
 
@@ -3880,12 +3904,13 @@ namespace Glean
             side.Add("常规", "", Color.FromArgb(142, 142, 147));
             side.Add("快捷键", "", Color.FromArgb(255, 149, 0));
             side.Add("存储与隐私", "", Color.FromArgb(52, 199, 89));
+            side.Add("时光轴", "\uE823", Color.FromArgb(255, 94, 87));
             side.Add("关于", "", Color.FromArgb(88, 86, 214));
             side.SetBounds(0, 0, Gfx.S(SideW), ClientSize.Height);
             side.Changed += delegate { ShowPage(); };
             Controls.Add(side);
 
-            for (int i = 0; i < 6; i++)
+            for (int i = 0; i < 7; i++)
             {
                 Panel p = new Panel();
                 p.BackColor = SetPal.Back;
@@ -3899,7 +3924,8 @@ namespace Glean
             BuildGeneral(pages[2]);
             BuildKeys(pages[3]);
             BuildStorage(pages[4]);
-            BuildAbout(pages[5]);
+            BuildTimeline(pages[5]);
+            BuildAbout(pages[6]);
 
             // 切换浅色 / 深色 / 主题色时,设置窗口立刻换成对应的样子
             themeSeg.Changed += delegate { PreviewTheme(); };
@@ -4221,6 +4247,26 @@ namespace Glean
             AddGroup(p, y, "隐私", g3, "这些程序复制的内容不会被记录(比如密码管理器),用英文逗号分隔。");
         }
 
+        void BuildTimeline(Panel p)
+        {
+            int y = PageTop(p, "时光轴");
+            SettingsGroup g1 = new SettingsGroup();
+            g1.AddRow("启用时光轴", "识别复制内容里的到期日期,到点提醒你", Switch(tTimeline, Config.TimelineOn), Gfx.S(52));
+            g1.AddRow("识别到日期时", null, Seg(askSeg, new string[] { "弹出询问", "只在卡片上标记" }, Config.TimelineAsk), Gfx.S(240));
+            y = AddGroup(p, y, null, g1, "只有日期旁边写着“到期、截止、还款、续费、会议…”这类字样,才会弹出询问;只有日期的文字,只在卡片右上角标一个小日历。");
+
+            SettingsGroup g2 = new SettingsGroup();
+            g2.AddRow("默认提前", null, Seg(leadSeg, new string[] { "当天", "提前 1 天", "提前 3 天" }, ClosestIndex(LeadOptions, Config.LeadDays)), Gfx.S(250));
+            g2.AddRow("提醒时间", null, Seg(hourSeg, new string[] { "8:00", "9:00", "10:00", "20:00" }, ClosestIndex(HourOptions, Config.RemindHour)), Gfx.S(250));
+            g2.AddRow("提示音", null, Switch(tTimeSound, Config.TimelineSound), Gfx.S(52));
+            Btn open = new Btn();
+            open.Text = "打开";
+            open.Height = Gfx.S(30);
+            open.Click += delegate { Timeline.Open(); };
+            g2.AddRow("时光轴窗口", "查看、完成或修改所有提醒;也可以从托盘菜单打开", open, Gfx.S(80));
+            AddGroup(p, y, "提醒", g2, "提醒只保存在这台电脑上;拾光在后台运行时才能准时提醒,全屏看视频、玩游戏时会等你退出全屏再弹出。");
+        }
+
         void BuildAbout(Panel p)
         {
             Theme t = Theme.Cur;
@@ -4312,6 +4358,11 @@ namespace Glean
             Config.MaxItems = MaxOptions[maxSeg.Selected];
             Config.KeepDays = DayOptions[daysSeg.Selected];
             Config.IgnoreApps = ignoreBox.Box.Text.Trim();
+            Config.TimelineOn = tTimeline.Checked;
+            Config.TimelineAsk = askSeg.Selected;
+            Config.LeadDays = LeadOptions[leadSeg.Selected];
+            Config.RemindHour = HourOptions[hourSeg.Selected];
+            Config.TimelineSound = tTimeSound.Checked;
             Config.DataDir = Util.SamePath(dir, Config.DefaultDir) ? "" : dir;
             MoveExisting = tMove.Checked;
             Config.Save();
@@ -5233,7 +5284,14 @@ namespace Glean
             return sz.Width + "x" + sz.Height + "|" + t.Dark + "|" + t.Accent.ToArgb() + "|" + CardLook.Header(it).ToArgb() + "|" +
                    CardLook.Title(it) + "|" + it.TimeAgo() + "|" + it.SizeText() + "|" + it.Pinned + "|" +
                    (bd != null ? bd.Color.ToString() : "") + "|" + (i < 9) + "|" + (pv != null ? pv.GetHashCode() : 0) + "|" +
-                   it.ThumbPending + "|" + (it.FileIcon != null) + "|" + (AppIcons.Get(it.AppPath) != null);
+                   it.ThumbPending + "|" + (it.FileIcon != null) + "|" + (AppIcons.Get(it.AppPath) != null) + "|" +
+                   DueKey(it);
+        }
+
+        static string DueKey(Item it)
+        {
+            DueDate.Hit h = DueDate.Of(it);
+            return h == null ? "" : h.Date.Ticks + (Timeline.Urgency(h.Date).ToArgb().ToString(CultureInfo.InvariantCulture));
         }
 
         Bitmap BodyFor(int i, Size sz)
@@ -5295,6 +5353,14 @@ namespace Glean
             Bitmap appIcon = courier != null ? null : AppIcons.Get(it.AppPath);
             int iconSz = Math.Min(Gfx.S(30), hh - Gfx.S(14));
             int textRight = hr.Right - Gfx.S(16) - (appIcon != null || courier != null ? iconSz + Gfx.S(10) : 0);
+            // 时光轴:文字里有将来的日期,标一个小日历(和来源图标同样大小,排在它左边)
+            DueDate.Hit due = DueDate.Of(it);
+            Rectangle dueR = Rectangle.Empty;
+            if (due != null)
+            {
+                dueR = new Rectangle(textRight - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz);
+                textRight = dueR.X - Gfx.S(10);
+            }
             // 色带:标题 + 小字"多久之前 · 大小"
             string sizeTxt = it.SizeText();
             string subt = it.TimeAgo() + (sizeTxt != null ? "  ·  " + sizeTxt : "");
@@ -5316,6 +5382,7 @@ namespace Glean
                 Gfx.SoftText(g, CardLook.Title(it), Gfx.HeaderFont, new Rectangle(tx0, blockY, tw0, Gfx.S(22)), ink, false);
                 Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk, false);
             }
+            if (due != null) Timeline.DrawCalendar(g, dueR, due.Date.Day, Timeline.Urgency(due.Date));
             if (courier != null)
                 Courier.DrawBadge(g, courier, new Rectangle(hr.Right - Gfx.S(16) - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz));
             else if (appIcon != null)
@@ -8222,6 +8289,54 @@ namespace Glean
             }, null);
         }
 
+        // 右键 → 加入时光轴:认出了日期就直接给几个提醒时间,没认出就自己选
+        ToolStripMenuItem TimelineMenu(Item it)
+        {
+            DueDate.Hit h = DueDate.Of(it);
+            string text = it.Text, app = it.AppName;
+            if (h == null)
+            {
+                ToolStripMenuItem pick = new ToolStripMenuItem("加入时光轴…");
+                pick.Click += delegate
+                {
+                    DateTime v;
+                    dialogOpen = true;
+                    bool ok = Timeline.PickTime(this, "什么时候提醒你?", DateTime.Today.AddDays(1).AddHours(Config.RemindHour), out v);
+                    dialogOpen = false;
+                    if (!ok) return;
+                    DueDate.Hit nh = new DueDate.Hit();
+                    nh.Date = v;
+                    nh.HasTime = true;
+                    nh.Label = "提醒";
+                    Timeline.Add(text, app, nh, v);
+                    ShowToast("已加入时光轴 · " + DueDate.Describe(v, true) + " 提醒", null, null);
+                };
+                return pick;
+            }
+            ToolStripMenuItem mi = new ToolStripMenuItem("加入时光轴(" + DueDate.Md(h.Date) + " " + h.Label + ")");
+            foreach (Timeline.Choice c in Timeline.Choices(h.Date, h.HasTime))
+            {
+                Timeline.Choice cc = c;
+                mi.DropDownItems.Add(c.Text + "(" + DueDate.Describe(c.At, true) + ")", null, delegate
+                {
+                    Timeline.Add(text, app, h, cc.At);
+                    ShowToast("已加入时光轴 · " + DueDate.Describe(cc.At, true) + " 提醒", null, null);
+                });
+            }
+            mi.DropDownItems.Add(new ToolStripSeparator());
+            mi.DropDownItems.Add("自定义时间…", null, delegate
+            {
+                DateTime v;
+                dialogOpen = true;
+                bool ok = Timeline.PickTime(this, "什么时候提醒你?", Timeline.Choices(h.Date, h.HasTime)[0].At, out v);
+                dialogOpen = false;
+                if (!ok) return;
+                Timeline.Add(text, app, h, v);
+                ShowToast("已加入时光轴 · " + DueDate.Describe(v, true) + " 提醒", null, null);
+            });
+            return mi;
+        }
+
         void MarkCourier(Item it, Courier.Company c)
         {
             hist.SetTitle(it, c == null ? null : c.Name);
@@ -8509,6 +8624,7 @@ namespace Glean
                     AddTransform(sub, "清理链接追踪参数", it, delegate(string s) { return Util.CleanUrl(s); });
                 m.Items.Add(sub);
                 if (it.Kind == Item.KUrl) m.Items.Add("在浏览器中打开", null, delegate { OpenLink(it); });
+                if (Config.TimelineOn) m.Items.Add(TimelineMenu(it));
                 Courier.Hit hit0 = Courier.HitOf(it);
                 Courier.Company cc0 = hit0 != null ? hit0.Company : null;
                 if (cc0 != null || Courier.LooksLikeNumber(it.Text))
@@ -11351,6 +11467,1538 @@ namespace Glean
     }
 
     // ================================================================ 主窗口(不可见,只负责收消息)
+    // ================================================================ 时光轴:识别文字里的到期日期
+    static class DueDate
+    {
+        public class Hit
+        {
+            public DateTime Date;      // 到期日(有具体时间时带时间)
+            public bool HasTime;
+            public bool Strong;        // 旁边有"到期 / 截止 / 还款…"这类词
+            public string Label;       // 显示用:"到期"、"截止"、"还款"、"会议"…
+        }
+
+        // 和日期挨在一起时,才算"这是个需要提醒的日子"
+        static readonly Regex ReKw = new Regex(
+            @"到期|截止|截至|有效期|失效|过期|还款|续费|缴费|交费|缴纳|报名|提交|最后一天|最晚|之前|以前|前完成|开会|会议|面试|考试|预约|航班|起飞|出发|生日|纪念日|年检|年审|交房|开庭|复诊|体检|" +
+            @"deadline|due\s+(?:date|on|by)|expires?|expiry|expiration|valid\s+(?:until|through|thru)",
+            RegexOptions.IgnoreCase);
+
+        static readonly Regex ReFull = new Regex(@"(?<![\d.])(20\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*[日号]?(?![\d.])");
+        static readonly Regex ReMonthDay = new Regex(@"(?<![\d年.\-/])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![\d万千百亿元%])");
+        static readonly Regex ReSlash = new Regex(@"(?<![\d/.:\-])(\d{1,2})/(\d{1,2})(?![\d/.%])");
+        static readonly Regex ReRelDay = new Regex(@"大后天|后天|明天|明日|今天|今日|今晚");
+        static readonly Regex ReWeek = new Regex(@"(下下|下个?|本|这个?)?(?:周|星期|礼拜)([一二三四五六日天1-7])");
+        static readonly Regex ReAfter = new Regex(@"(\d{1,3}|[一二两三四五六七八九十]{1,3})\s*(天|日|周|个?星期|个月)\s*(?:后|之后|以后|内|之内)");
+        static readonly Regex ReMonthEnd = new Regex(@"(下个?月|本月|这个?月|月)(?:底|末)");
+        static readonly Regex ReTime = new Regex(@"^\s*(?:的)?\s*(上午|早上|早晨|中午|下午|傍晚|晚上|晚|凌晨)?\s*(\d{1,2})\s*(?:[:：]\s*(\d{2})|点\s*(?:(\d{1,2})\s*分?|(半))?)");
+
+        static readonly string[] Weeks = new string[] { "周日", "周一", "周二", "周三", "周四", "周五", "周六" };
+
+        public static string Week(DateTime d) { return Weeks[(int)d.DayOfWeek]; }
+
+        public static Hit Find(string text) { return Find(text, DateTime.Now); }
+
+        public static Hit Find(string text, DateTime now)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            string s = text.Length > 3000 ? text.Substring(0, 3000) : text;
+            string trimmed = s.Trim();
+            if (Regex.IsMatch(trimmed, @"^(https?://|www\.)\S+$", RegexOptions.IgnoreCase)) return null;
+            if (Regex.IsMatch(trimmed, @"^([a-zA-Z]:\\|\\\\)[^\r\n]*$")) return null;
+
+            List<Hit> hits = new List<Hit>();
+            List<KeyValuePair<int, int>> used = new List<KeyValuePair<int, int>>();
+            int explicitCount = 0;
+
+            foreach (Match m in ReFull.Matches(s))
+            {
+                explicitCount++;
+                DateTime d;
+                if (!MakeDate(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value), out d)) continue;
+                Add(hits, used, s, m, d, false, now);
+            }
+            foreach (Match m in ReMonthDay.Matches(s))
+            {
+                if (Overlaps(used, m)) continue;
+                explicitCount++;
+                DateTime d;
+                if (!MonthDay(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), now, out d)) continue;
+                Add(hits, used, s, m, d, false, now);
+            }
+            foreach (Match m in ReSlash.Matches(s))
+            {
+                if (Overlaps(used, m)) continue;
+                DateTime d;
+                if (!MonthDay(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), now, out d)) continue;
+                Add(hits, used, s, m, d, true, now);   // 11/20 这种写法容易是分数,只在有关键词时算
+            }
+            foreach (Match m in ReRelDay.Matches(s))
+            {
+                if (Overlaps(used, m)) continue;
+                int add = m.Value == "大后天" ? 3 : m.Value == "后天" ? 2 : (m.Value == "明天" || m.Value == "明日") ? 1 : 0;
+                Add(hits, used, s, m, now.Date.AddDays(add), true, now);
+            }
+            foreach (Match m in ReWeek.Matches(s))
+            {
+                if (Overlaps(used, m)) continue;
+                string pre = m.Groups[1].Value;
+                int dow;
+                string c = m.Groups[2].Value;
+                if (c == "日" || c == "天" || c == "7") dow = 7;
+                else if (char.IsDigit(c[0])) dow = c[0] - '0';
+                else dow = "一二三四五六".IndexOf(c[0]) + 1;
+                int today = now.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)now.DayOfWeek;
+                int delta = dow - today;
+                if (pre.StartsWith("下下")) delta += 14;
+                else if (pre.StartsWith("下")) delta += 7;
+                else if (pre.Length == 0 && delta <= 0) delta += 7;   // 只说"周三":指接下来的那个周三
+                Add(hits, used, s, m, now.Date.AddDays(delta), true, now);
+            }
+            foreach (Match m in ReAfter.Matches(s))
+            {
+                if (Overlaps(used, m)) continue;
+                int n = CnNum(m.Groups[1].Value);
+                if (n <= 0 || n > 400) continue;
+                string u = m.Groups[2].Value;
+                DateTime d = u == "个月" || u == "月" ? now.Date.AddMonths(n) : u.Contains("周") || u.Contains("星期") ? now.Date.AddDays(7 * n) : now.Date.AddDays(n);
+                Add(hits, used, s, m, d, true, now);
+            }
+            foreach (Match m in ReMonthEnd.Matches(s))
+            {
+                if (Overlaps(used, m)) continue;
+                DateTime first = new DateTime(now.Year, now.Month, 1);
+                if (m.Groups[1].Value.StartsWith("下")) first = first.AddMonths(1);
+                Add(hits, used, s, m, first.AddMonths(1).AddDays(-1), true, now);
+            }
+
+            // 日志、表格这类一大堆日期的文字:只认带关键词的
+            bool noisy = explicitCount > 4;
+            Hit best = null;
+            foreach (Hit h in hits)
+            {
+                if (!h.Strong && noisy) continue;
+                if (best == null || (h.Strong && !best.Strong) || (h.Strong == best.Strong && h.Date < best.Date)) best = h;
+            }
+            return best;
+        }
+
+        static void Add(List<Hit> hits, List<KeyValuePair<int, int>> used, string s, Match m, DateTime d, bool needKw, DateTime now)
+        {
+            used.Add(new KeyValuePair<int, int>(m.Index, m.Index + m.Length));
+            Hit h = new Hit();
+            h.Date = d;
+            int end = m.Index + m.Length;
+            // 紧跟着的时间:"11月20日 18:00"、"明天下午3点"
+            Match tm = ReTime.Match(s.Substring(end, Math.Min(16, s.Length - end)));
+            if (tm.Success)
+            {
+                int hh = int.Parse(tm.Groups[2].Value);
+                int mm = tm.Groups[3].Success ? int.Parse(tm.Groups[3].Value) : tm.Groups[4].Success ? int.Parse(tm.Groups[4].Value) : tm.Groups[5].Success ? 30 : 0;
+                string ap = tm.Groups[1].Value;
+                if ((ap == "下午" || ap == "傍晚" || ap == "晚上" || ap == "晚") && hh < 12) hh += 12;
+                if (ap == "中午" && hh < 6) hh += 12;
+                bool colon = tm.Groups[3].Success;
+                if (hh <= 23 && mm <= 59 && (colon || tm.Value.Contains("点")))
+                {
+                    h.Date = d.Date.AddHours(hh).AddMinutes(mm);
+                    h.HasTime = true;
+                    end += tm.Length;
+                }
+            }
+            if (m.Value == "今晚" && !h.HasTime) { h.Date = d.Date.AddHours(20); h.HasTime = true; }
+
+            // 关键词:同一行里,日期前 24 个字或后 16 个字以内
+            int lineStart = s.LastIndexOf('\n', Math.Max(0, m.Index - 1)) + 1;
+            if (m.Index == 0) lineStart = 0;
+            int lineEnd = s.IndexOf('\n', end);
+            if (lineEnd < 0) lineEnd = s.Length;
+            int a = Math.Max(lineStart, m.Index - 24), b = Math.Min(lineEnd, end + 16);
+            // 取离日期最近的那个关键词("报名截止 12/1" → 截止)
+            Match k = null;
+            int bestDist = int.MaxValue, center = m.Index - a;
+            foreach (Match km in ReKw.Matches(s.Substring(a, b - a)))
+            {
+                int dist = km.Index + km.Length <= center ? center - (km.Index + km.Length) : Math.Max(0, km.Index - (end - a));
+                if (dist < bestDist) { bestDist = dist; k = km; }
+            }
+            h.Strong = k != null;
+            if (k != null) h.Label = LabelOf(k.Value);
+            if (needKw && !h.Strong) return;
+
+            // 只要将来的日子(当天带具体时间、且还没过的也算)
+            if (h.HasTime ? h.Date <= now.AddMinutes(20) : h.Date.Date <= now.Date) return;
+            if (h.Date > now.AddYears(3)) return;
+            if (h.Label == null) h.Label = "到期";
+            hits.Add(h);
+        }
+
+        static string LabelOf(string kw)
+        {
+            string k = kw.ToLowerInvariant();
+            if (k == "截止" || k == "截至" || k == "之前" || k == "以前" || k == "最晚" || k == "最后一天" || k == "前完成" || k.StartsWith("deadline") || k.StartsWith("due")) return "截止";
+            if (k == "到期" || k == "有效期" || k == "失效" || k == "过期" || k.StartsWith("expir") || k.StartsWith("valid")) return "到期";
+            if (k == "开会") return "会议";
+            if (k == "起飞" || k == "航班") return "航班";
+            if (k == "缴纳" || k == "交费") return "缴费";
+            return kw;
+        }
+
+        static bool Overlaps(List<KeyValuePair<int, int>> used, Match m)
+        {
+            foreach (KeyValuePair<int, int> u in used)
+                if (m.Index < u.Value && m.Index + m.Length > u.Key) return true;
+            return false;
+        }
+
+        static bool MakeDate(int y, int mo, int d, out DateTime r)
+        {
+            r = DateTime.MinValue;
+            if (mo < 1 || mo > 12 || d < 1 || d > DateTime.DaysInMonth(Math.Max(1, Math.Min(9999, y)), mo)) return false;
+            r = new DateTime(y, mo, d);
+            return true;
+        }
+
+        // 只写了月日:默认今年;如果已经过去很久了,算明年(刚过去不到两个月的,多半说的就是过去的事)
+        static bool MonthDay(int mo, int d, DateTime now, out DateTime r)
+        {
+            if (!MakeDate(now.Year, mo, d, out r))
+            {
+                if (mo == 2 && d == 29 && MakeDate(now.Year + 1, mo, d, out r)) return true;
+                return false;
+            }
+            if (r < now.Date)
+            {
+                if ((now.Date - r).TotalDays <= 60) return true;   // 交给"必须是将来"去过滤
+                DateTime n;
+                if (MakeDate(now.Year + 1, mo, d, out n)) r = n;
+            }
+            return true;
+        }
+
+        static int CnNum(string s)
+        {
+            int v;
+            if (int.TryParse(s, out v)) return v;
+            const string digits = "零一二三四五六七八九";
+            if (s == "两") return 2;
+            if (s == "十") return 10;
+            int ten = s.IndexOf('十');
+            if (ten < 0) return s.Length == 1 ? digits.IndexOf(s[0]) : -1;
+            int hi = ten == 0 ? 1 : digits.IndexOf(s[0]);
+            int lo = ten == s.Length - 1 ? 0 : digits.IndexOf(s[s.Length - 1]);
+            return hi < 0 || lo < 0 ? -1 : hi * 10 + lo;
+        }
+
+        // 卡片上用:内容不变,一天只算一次
+        public static Hit Of(Item it)
+        {
+            if (!Config.TimelineOn || it == null || it.IsImage || it.IsFiles || it.Text == null) return null;
+            if (it.DueDay != DateTime.Today)
+            {
+                it.DueDay = DateTime.Today;
+                try { it.DueHit = Find(it.Text); } catch { it.DueHit = null; }
+            }
+            return it.DueHit;
+        }
+
+        public static string Md(DateTime d) { return d.Month + "月" + d.Day + "日"; }
+
+        // "11月20日"、"11月20日 18:00"
+        public static string Describe(DateTime d, bool time)
+        {
+            return Md(d) + (time ? " " + d.ToString("HH:mm", CultureInfo.InvariantCulture) : "");
+        }
+
+        // 离今天多远:"今天"、"明天"、"还有 15 天"、"已过 2 天"
+        public static string Away(DateTime due)
+        {
+            int n = (int)(due.Date - DateTime.Today).TotalDays;
+            if (n == 0) return "今天";
+            if (n == 1) return "明天";
+            if (n == 2) return "后天";
+            if (n < 0) return "已过 " + (-n) + " 天";
+            return "还有 " + n + " 天";
+        }
+    }
+
+    // 一条提醒
+    class Reminder
+    {
+        public string Id = Guid.NewGuid().ToString("N").Substring(0, 12);
+        public DateTime Due, At, Created = DateTime.Now, DoneAt;
+        public bool HasTime, Done, Notified;
+        public string Label = "到期", Text = "", App = "";
+
+        public int DaysLeft { get { return (int)(Due.Date - DateTime.Today).TotalDays; } }
+
+        // 标题:"明天到期"、"还有 3 天 · 还款"
+        public string Headline
+        {
+            get
+            {
+                string away = DueDate.Away(Due);
+                if (away.StartsWith("还有")) away = DaysLeft + " 天后";
+                if (Label == "到期" || Label == "截止") return away + Label;
+                return away + " · " + Label;
+            }
+        }
+
+        public string Snippet(int max)
+        {
+            string s = Regex.Replace(Text ?? "", @"\s+", " ").Trim();
+            return s.Length > max ? s.Substring(0, max) + "…" : s;
+        }
+
+        static string B64(string s) { return Convert.ToBase64String(Encoding.UTF8.GetBytes(s ?? "")); }
+        static string UnB64(string s) { try { return Encoding.UTF8.GetString(Convert.FromBase64String(s)); } catch { return ""; } }
+
+        public string Serialize()
+        {
+            return string.Join("|", new string[]
+            {
+                Id, Due.Ticks.ToString(CultureInfo.InvariantCulture), HasTime ? "1" : "0", At.Ticks.ToString(CultureInfo.InvariantCulture),
+                B64(Label), B64(Text), B64(App), Done ? "1" : "0", Notified ? "1" : "0",
+                Created.Ticks.ToString(CultureInfo.InvariantCulture), DoneAt.Ticks.ToString(CultureInfo.InvariantCulture)
+            });
+        }
+
+        public static Reminder Parse(string line)
+        {
+            string[] p = line.Split('|');
+            if (p.Length < 11) return null;
+            Reminder r = new Reminder();
+            r.Id = p[0];
+            r.Due = new DateTime(long.Parse(p[1], CultureInfo.InvariantCulture));
+            r.HasTime = p[2] == "1";
+            r.At = new DateTime(long.Parse(p[3], CultureInfo.InvariantCulture));
+            r.Label = UnB64(p[4]);
+            r.Text = UnB64(p[5]);
+            r.App = UnB64(p[6]);
+            r.Done = p[7] == "1";
+            r.Notified = p[8] == "1";
+            r.Created = new DateTime(long.Parse(p[9], CultureInfo.InvariantCulture));
+            r.DoneAt = new DateTime(long.Parse(p[10], CultureInfo.InvariantCulture));
+            return r;
+        }
+    }
+
+    // 时光轴:提醒的保存、到点检查、各个界面的入口
+    static class Timeline
+    {
+        public static readonly List<Reminder> Items = new List<Reminder>();
+        public static event Action Changed;
+        static bool loaded;
+        static readonly HashSet<string> asked = new HashSet<string>();
+        static readonly List<AlertCard> alerts = new List<AlertCard>();
+        static TimelineForm window;
+
+        public static readonly Color Red = Color.FromArgb(226, 76, 68);
+        public static readonly Color Amber = Color.FromArgb(230, 158, 38);
+
+        static string FilePath { get { return System.IO.Path.Combine(Config.DefaultDir, "timeline.txt"); } }
+
+        public static void Load()
+        {
+            if (loaded) return;
+            loaded = true;
+            try
+            {
+                if (!File.Exists(FilePath)) return;
+                foreach (string line in File.ReadAllLines(FilePath, Encoding.UTF8))
+                {
+                    try { Reminder r = Reminder.Parse(line.Trim()); if (r != null) Items.Add(r); } catch { }
+                }
+            }
+            catch { }
+        }
+
+        public static void Save()
+        {
+            try
+            {
+                Directory.CreateDirectory(Config.DefaultDir);
+                // 完成超过 60 天的就不留了
+                Items.RemoveAll(r => r.Done && r.DoneAt < DateTime.Now.AddDays(-60));
+                File.WriteAllLines(FilePath, Items.Select(r => r.Serialize()).ToArray(), new UTF8Encoding(false));
+            }
+            catch { }
+            if (Changed != null) { try { Changed(); } catch { } }
+        }
+
+        public static bool Has(string text)
+        {
+            Load();
+            foreach (Reminder r in Items) if (!r.Done && r.Text == text) return true;
+            return false;
+        }
+
+        public static int ActiveCount { get { Load(); return Items.Count(r => !r.Done); } }
+
+        // ---------------- 提醒时间的选项
+        public class Choice
+        {
+            public string Text;     // 按钮上:"提前 1 天"
+            public DateTime At;
+            public int Lead;        // 0 当天  1 提前1天  3 提前3天  -1 提前1小时
+            public Choice(string t, DateTime at, int lead) { Text = t; At = at; Lead = lead; }
+        }
+
+        public static List<Choice> Choices(DateTime due, bool hasTime)
+        {
+            List<Choice> list = new List<Choice>();
+            DateTime now = DateTime.Now;
+            int hour = Math.Max(0, Math.Min(23, Config.RemindHour));
+            DateTime d3 = due.Date.AddDays(-3).AddHours(hour);
+            DateTime d1 = due.Date.AddDays(-1).AddHours(hour);
+            DateTime d0 = due.Date.AddHours(hour);
+            if (d3 > now) list.Add(new Choice("提前 3 天", d3, 3));
+            if (d1 > now) list.Add(new Choice("提前 1 天", d1, 1));
+            if (d0 > now && (!hasTime || d0 < due)) list.Add(new Choice("当天 " + hour + ":00", d0, 0));
+            if (hasTime && due.AddHours(-1) > now) list.Add(new Choice("提前 1 小时", due.AddHours(-1), -1));
+            if (list.Count == 0) list.Add(new Choice("10 分钟后", now.AddMinutes(10), -2));
+            return list;
+        }
+
+        // 按设置里的"默认提前"挑一个;没有就挑最接近的
+        public static Choice Preferred(List<Choice> list)
+        {
+            foreach (Choice c in list) if (c.Lead == Config.LeadDays) return c;
+            foreach (Choice c in list) if (c.Lead >= 0 && c.Lead < Config.LeadDays) return c;
+            return list[0];
+        }
+
+        public static Reminder Add(string text, string app, DueDate.Hit h, DateTime at)
+        {
+            Load();
+            Reminder r = new Reminder();
+            r.Due = h.Date;
+            r.HasTime = h.HasTime;
+            r.Label = h.Label ?? "到期";
+            r.Text = text ?? "";
+            r.App = app ?? "";
+            r.At = at;
+            Items.Add(r);
+            Save();
+            return r;
+        }
+
+        public static void Complete(Reminder r, bool done)
+        {
+            r.Done = done;
+            r.DoneAt = done ? DateTime.Now : DateTime.MinValue;
+            if (!done) r.Notified = r.At <= DateTime.Now;
+            Save();
+        }
+
+        public static void Remove(Reminder r)
+        {
+            Items.Remove(r);
+            Save();
+        }
+
+        public static void Reschedule(Reminder r, DateTime at)
+        {
+            r.At = at;
+            r.Notified = false;
+            r.Done = false;
+            Save();
+        }
+
+        // ---------------- 复制时:要不要提醒?
+        public static void OnCopied(string text, string app)
+        {
+            if (!Config.TimelineOn || Config.TimelineAsk != 0 || string.IsNullOrEmpty(text)) return;
+            string key = Util.Md5Short(Encoding.UTF8.GetBytes(text));
+            if (asked.Contains(key) || Has(text)) return;
+            DueDate.Hit h;
+            try { h = DueDate.Find(text); } catch { return; }
+            if (h == null || !h.Strong) return;
+            asked.Add(key);
+            Capsule.Ask(text, app, h);
+        }
+
+        // ---------------- 到点检查(主窗口每 20 秒调一次)
+        public static void Tick()
+        {
+            if (!Config.TimelineOn) return;
+            Load();
+            if (alerts.Count >= 3) return;
+            DateTime now = DateTime.Now;
+            List<Reminder> due = Items.Where(r => !r.Done && !r.Notified && r.At <= now).OrderBy(r => r.At).ToList();
+            if (due.Count == 0) return;
+            if (FullscreenBusy()) return;   // 全屏看视频、打游戏时先不打扰,退出全屏再弹
+            bool sound = false;
+            foreach (Reminder r in due)
+            {
+                if (alerts.Count >= 3) break;
+                r.Notified = true;
+                AlertCard a = new AlertCard(r);
+                alerts.Add(a);
+                a.FormClosed += delegate { alerts.Remove(a); Restack(); };
+                a.Popup(alerts.Count - 1);
+                sound = true;
+            }
+            Save();
+            if (sound && Config.TimelineSound) { try { System.Media.SystemSounds.Asterisk.Play(); } catch { } }
+        }
+
+        static void Restack()
+        {
+            for (int i = 0; i < alerts.Count; i++) alerts[i].MoveToSlot(i);
+        }
+
+        public static void Open()
+        {
+            Load();
+            if (window == null || window.IsDisposed)
+            {
+                window = new TimelineForm();
+                window.Show();
+            }
+            else
+            {
+                if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
+                window.Activate();
+            }
+        }
+
+        // ---------------- 选时间的小窗口
+        public static bool PickTime(IWin32Window owner, string title, DateTime initial, out DateTime result)
+        {
+            using (PickTimeForm f = new PickTimeForm(title, initial))
+            {
+                bool ok = f.ShowDialog(owner) == DialogResult.OK;
+                result = f.Value;
+                return ok;
+            }
+        }
+
+        // 已经提醒过、或者完成了的,不算"进行中"
+        public static void FillChoicesMenu(ToolStripItemCollection items, Reminder r, Action<DateTime> pick)
+        {
+            DateTime now = DateTime.Now;
+            int hour = Math.Max(0, Math.Min(23, Config.RemindHour));
+            items.Add("1 小时后", null, delegate { pick(now.AddHours(1)); });
+            if (now.Hour < 19) items.Add("今晚 20:00", null, delegate { pick(now.Date.AddHours(20)); });
+            items.Add("明天 " + hour + ":00", null, delegate { pick(now.Date.AddDays(1).AddHours(hour)); });
+            if (r != null)
+                foreach (Choice c in Choices(r.Due, r.HasTime))
+                {
+                    if (c.Lead == -2) continue;
+                    Choice cc = c;
+                    items.Add(c.Text + "(" + DueDate.Describe(c.At, true) + ")", null, delegate { pick(cc.At); });
+                }
+            items.Add(new ToolStripSeparator());
+            items.Add("自定义时间…", null, delegate
+            {
+                DateTime v;
+                if (PickTime(null, "什么时候提醒你?", r != null && r.At > now ? r.At : now.AddHours(1), out v)) pick(v);
+            });
+        }
+
+        // ---------------- 全屏检测
+        [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
+
+        public static bool FullscreenBusy()
+        {
+            try
+            {
+                IntPtr h = Native.GetForegroundWindow();
+                if (h == IntPtr.Zero) return false;
+                StringBuilder sb = new StringBuilder(64);
+                GetClassName(h, sb, 64);
+                string c = sb.ToString();
+                if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd") return false;
+                RECT r;
+                if (!GetWindowRect(h, out r)) return false;
+                Rectangle s = Screen.FromHandle(h).Bounds;
+                return r.Left <= s.Left && r.Top <= s.Top && r.Right >= s.Right && r.Bottom >= s.Bottom;
+            }
+            catch { return false; }
+        }
+
+        // ---------------- 公用的画法
+        public static GraphicsPath RR(RectangleF r, float rad)
+        {
+            float d = Math.Max(1f, Math.Min(rad * 2, Math.Min(r.Width, r.Height)));
+            GraphicsPath p = new GraphicsPath();
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        public static void Fill(Graphics g, Color c, RectangleF r, float rad)
+        {
+            using (GraphicsPath p = RR(r, rad))
+            using (SolidBrush b = new SolidBrush(c))
+                g.FillPath(b, p);
+        }
+
+        // 灰度抗锯齿写字(透明窗口里用;ClearType 在透明底上会发黑)
+        public static void Txt(Graphics g, string s, Font f, RectangleF r, Color c, StringAlignment h, StringAlignment v, bool wrap)
+        {
+            System.Drawing.Text.TextRenderingHint old = g.TextRenderingHint;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using (StringFormat sf = (StringFormat)StringFormat.GenericTypographic.Clone())
+            using (SolidBrush b = new SolidBrush(c))
+            {
+                sf.Alignment = h;
+                sf.LineAlignment = v;
+                sf.Trimming = StringTrimming.EllipsisCharacter;
+                sf.HotkeyPrefix = System.Drawing.Text.HotkeyPrefix.None;
+                sf.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+                if (!wrap) sf.FormatFlags |= StringFormatFlags.NoWrap;
+                else sf.FormatFlags |= StringFormatFlags.LineLimit;
+                g.DrawString(s ?? "", f, b, r, sf);
+            }
+            g.TextRenderingHint = old;
+        }
+
+        public static float Measure(Graphics g, string s, Font f)
+        {
+            using (StringFormat sf = (StringFormat)StringFormat.GenericTypographic.Clone())
+            {
+                sf.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap;
+                return g.MeasureString(s ?? "", f, PointF.Empty, sf).Width;
+            }
+        }
+
+        static Graphics measureG;
+        public static float Measure(string s, Font f)
+        {
+            if (measureG == null) measureG = Graphics.FromImage(new Bitmap(4, 4));
+            return Measure(measureG, s, f);
+        }
+
+        // 离到期越近颜色越醒目:远 → 中性,3 天内 → 琥珀,当天 / 过期 → 红
+        public static Color Urgency(DateTime due)
+        {
+            int n = (int)(due.Date - DateTime.Today).TotalDays;
+            if (n <= 0) return Red;
+            if (n <= 3) return Amber;
+            return Theme.Cur.Dark ? Color.FromArgb(150, 170, 200) : Color.FromArgb(108, 128, 160);
+        }
+
+        // 小日历图标:顶上一条色带,下面是日子
+        public static void DrawCalendar(Graphics g, Rectangle r, int day, Color band)
+        {
+            SmoothingMode sm = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float rad = r.Width * 0.24f;
+            using (GraphicsPath sh = RR(new RectangleF(r.X, r.Y + Math.Max(1f, r.Height * 0.04f), r.Width, r.Height), rad))
+            using (SolidBrush sb = new SolidBrush(Color.FromArgb(46, 0, 0, 0)))
+                g.FillPath(sb, sh);
+            using (GraphicsPath tile = RR(new RectangleF(r.X, r.Y, r.Width, r.Height), rad))
+            {
+                g.FillPath(Brushes.White, tile);
+                GraphicsContainer gc = g.BeginContainer();
+                g.SetClip(tile);
+                using (LinearGradientBrush lb = new LinearGradientBrush(new RectangleF(r.X, r.Y - 1, r.Width, r.Height * 0.32f + 2),
+                    Theme.Blend(band, Color.White, 0.15), Theme.Blend(band, Color.Black, 0.08), LinearGradientMode.Vertical))
+                    g.FillRectangle(lb, r.X, r.Y, r.Width, r.Height * 0.32f);
+                g.EndContainer(gc);
+                using (Pen hl = new Pen(Color.FromArgb(30, 0, 0, 0), 1f)) g.DrawPath(hl, tile);
+            }
+            try
+            {
+                using (GraphicsPath gp = new GraphicsPath())
+                using (FontFamily ff = new FontFamily("Segoe UI"))
+                {
+                    gp.AddString(day.ToString(CultureInfo.InvariantCulture), ff, (int)FontStyle.Bold, r.Height * 0.5f, new PointF(0, 0), StringFormat.GenericTypographic);
+                    RectangleF bb = gp.GetBounds();
+                    float cy = r.Y + r.Height * 0.32f + (r.Height * 0.68f) / 2f;
+                    using (Matrix m = new Matrix())
+                    {
+                        m.Translate(r.X + r.Width / 2f - (bb.X + bb.Width / 2f), cy - (bb.Y + bb.Height / 2f));
+                        gp.Transform(m);
+                    }
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb(40, 36, 32))) g.FillPath(b, gp);
+                }
+            }
+            catch { }
+            g.SmoothingMode = sm;
+        }
+
+        public static readonly Font DayFont = new Font("Segoe UI Semibold", 22f);
+        public static readonly Font DayFontSmall = new Font("Segoe UI Semibold", 17f);
+        public static readonly Font RingFont = new Font("Segoe UI Semibold", 8.5f);
+    }
+
+    // 带投影、圆角、可以半透明的小窗口(提醒胶囊、到点提醒卡片的底子)
+    class LayeredPopup : Form
+    {
+        [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
+        [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
+        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND blend, int flags);
+        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+
+        protected readonly int Pad = Gfx.S(22);          // 四周留给投影的地方
+        protected readonly List<KeyValuePair<Rectangle, Action>> Hot = new List<KeyValuePair<Rectangle, Action>>();
+        protected int HoverIdx = -1;
+        protected float Alpha = 0f, Rise = 1f;           // 淡入 / 上浮的进度
+        readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
+        double animStart;
+        bool closing;
+        public bool MenuOpen;
+
+        public LayeredPopup()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            anim.Interval = 15;
+            anim.Tick += delegate { Step(); };
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x80000 | 0x80 | 0x08000000 | 0x8;   // 分层 + 工具窗口 + 不激活 + 置顶
+                return cp;
+            }
+        }
+
+        protected Rectangle Card { get { return new Rectangle(Pad, Pad - Gfx.S(6), Width - 2 * Pad, Height - 2 * Pad); } }
+
+        protected virtual void PaintCard(Graphics g, Rectangle card) { }
+
+        protected void Appear()
+        {
+            closing = false;
+            animStart = Gfx.Ms;
+            if (!Visible) Show();
+            anim.Start();
+            Step();
+        }
+
+        public void Dismiss()
+        {
+            if (closing || IsDisposed) return;
+            closing = true;
+            animStart = Gfx.Ms;
+            anim.Start();
+        }
+
+        void Step()
+        {
+            double p = Math.Min(1.0, (Gfx.Ms - animStart) / (closing ? 180.0 : 280.0));
+            double e = 1 - Math.Pow(1 - p, 3);
+            if (closing) { Alpha = (float)(1 - e); Rise = 1f; }
+            else { Alpha = (float)e; Rise = (float)e; }
+            Render();
+            if (p >= 1)
+            {
+                anim.Stop();
+                if (closing) Close();
+            }
+        }
+
+        public void Render()
+        {
+            if (IsDisposed || !IsHandleCreated || Width <= 0 || Height <= 0) return;
+            Hot.Clear();
+            using (Bitmap bmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    Rectangle c = Card;
+                    c.Offset(0, (int)Math.Round((1 - Rise) * Gfx.S(12)));
+                    // 柔和的投影
+                    for (int k = Gfx.S(16); k >= 1; k -= Math.Max(1, Gfx.S(2)))
+                    {
+                        RectangleF sr = new RectangleF(c.X - k * 0.6f, c.Y - k * 0.4f + Gfx.S(5), c.Width + k * 1.2f, c.Height + k * 1.2f);
+                        Timeline.Fill(g, Color.FromArgb(Theme.Cur.Dark ? 9 : 6, 0, 0, 0), sr, Gfx.S(16) + k);
+                    }
+                    Theme t = Theme.Cur;
+                    Color back = t.Dark ? Color.FromArgb(250, 40, 37, 35) : Color.FromArgb(250, 252, 250, 247);
+                    Timeline.Fill(g, back, c, Gfx.S(16));
+                    using (GraphicsPath p = Timeline.RR(new RectangleF(c.X + 0.5f, c.Y + 0.5f, c.Width - 1, c.Height - 1), Gfx.S(16)))
+                    using (Pen pen = new Pen(t.Dark ? Color.FromArgb(40, 255, 255, 255) : Color.FromArgb(20, 0, 0, 0), 1f))
+                        g.DrawPath(pen, p);
+                    PaintCard(g, c);
+                }
+                Push(bmp, (byte)Math.Max(0, Math.Min(255, (int)(Alpha * 255))));
+            }
+        }
+
+        void Push(Bitmap bmp, byte alpha)
+        {
+            IntPtr screen = GetDC(IntPtr.Zero);
+            IntPtr mem = CreateCompatibleDC(screen);
+            IntPtr hb = IntPtr.Zero, old = IntPtr.Zero;
+            try
+            {
+                hb = bmp.GetHbitmap(Color.FromArgb(0));
+                old = SelectObject(mem, hb);
+                PT pos = new PT(Left, Top), src = new PT(0, 0);
+                SZ size = new SZ(bmp.Width, bmp.Height);
+                BLEND b = new BLEND();
+                b.Op = 0; b.Flags = 0; b.Alpha = alpha; b.Format = 1;
+                UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref b, 2);
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, screen);
+                if (hb != IntPtr.Zero) { SelectObject(mem, old); DeleteObject(hb); }
+                DeleteDC(mem);
+            }
+        }
+
+        // 一个可以点的按钮:primary = 主题色实心;ghost = 只有字
+        protected void Button(Graphics g, Rectangle r, string text, bool primary, Action click)
+        {
+            int idx = Hot.Count;
+            Hot.Add(new KeyValuePair<Rectangle, Action>(r, click));
+            Theme t = Theme.Cur;
+            bool hov = idx == HoverIdx;
+            Color fill = primary ? (hov ? Theme.Blend(t.Accent, Color.Black, 0.1) : t.Accent)
+                                 : (hov ? (t.Dark ? Color.FromArgb(72, 68, 64) : Color.FromArgb(232, 226, 218))
+                                        : (t.Dark ? Color.FromArgb(58, 54, 51) : Color.FromArgb(241, 236, 229)));
+            Timeline.Fill(g, fill, r, r.Height / 2f);
+            Timeline.Txt(g, text, Gfx.UI, r, primary ? Color.White : t.Text, StringAlignment.Center, StringAlignment.Center, false);
+        }
+
+        // 只是一块可点的区域(不画东西)
+        protected void HotArea(Rectangle r, Action click)
+        {
+            Hot.Add(new KeyValuePair<Rectangle, Action>(r, click));
+        }
+
+        protected bool IsHover(Rectangle r)
+        {
+            for (int i = 0; i < Hot.Count; i++) if (Hot[i].Key == r) return i == HoverIdx;
+            return false;
+        }
+
+        protected void CloseGlyph(Graphics g, Rectangle r, Action click)
+        {
+            int idx = Hot.Count;
+            Hot.Add(new KeyValuePair<Rectangle, Action>(r, click));
+            Theme t = Theme.Cur;
+            if (idx == HoverIdx) Timeline.Fill(g, t.Dark ? Color.FromArgb(64, 60, 56) : Color.FromArgb(236, 230, 222), r, r.Width / 2f);
+            float k = r.Width * 0.18f;
+            using (Pen p = new Pen(t.Sub, Gfx.F(1.4f)))
+            {
+                p.StartCap = p.EndCap = LineCap.Round;
+                float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f;
+                g.DrawLine(p, cx - k, cy - k, cx + k, cy + k);
+                g.DrawLine(p, cx + k, cy - k, cx - k, cy + k);
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int h = -1;
+            for (int i = 0; i < Hot.Count; i++) if (Hot[i].Key.Contains(e.Location)) { h = i; }
+            Cursor = h >= 0 ? Cursors.Hand : Cursors.Default;
+            if (h != HoverIdx) { HoverIdx = h; Render(); }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (HoverIdx != -1) { HoverIdx = -1; Render(); }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            for (int i = Hot.Count - 1; i >= 0; i--)
+                if (Hot[i].Key.Contains(e.Location)) { Action a = Hot[i].Value; if (a != null) a(); return; }
+        }
+
+        protected bool MouseInside { get { return Bounds.Contains(Cursor.Position); } }
+
+        protected void ShowMenu(ContextMenuStrip m, Point screen)
+        {
+            Theme.StyleMenu(m);
+            MenuOpen = true;
+            m.Closed += delegate { MenuOpen = false; };
+            m.Show(screen);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            anim.Stop();
+            base.OnFormClosed(e);
+        }
+    }
+
+    // 复制到带日期的文字时,右下角升起的小胶囊:"11月20日到期 · 还有 15 天   [提前 1 天] [当天 9:00] [⋯]"
+    class Capsule : LayeredPopup
+    {
+        static Capsule current;
+        readonly string text, app;
+        readonly DueDate.Hit hit;
+        readonly List<Timeline.Choice> choices;
+        Reminder made;
+        double shownAt;
+        readonly System.Windows.Forms.Timer life = new System.Windows.Forms.Timer();
+
+        public static void Ask(string text, string app, DueDate.Hit h)
+        {
+            if (current != null && !current.IsDisposed) current.Close();
+            current = new Capsule(text, app, h);
+            current.Popup();
+        }
+
+        Capsule(string text, string app, DueDate.Hit h)
+        {
+            this.text = text;
+            this.app = app;
+            hit = h;
+            choices = Timeline.Choices(h.Date, h.HasTime);
+            life.Interval = 200;
+            life.Tick += delegate
+            {
+                if (MouseInside || MenuOpen) { shownAt = Gfx.Ms; return; }   // 鼠标停在上面时不消失
+                double keep = made != null ? 2600 : 9000;
+                if (Gfx.Ms - shownAt > keep) { life.Stop(); Dismiss(); }
+            };
+        }
+
+        string Title { get { return DueDate.Describe(hit.Date, hit.HasTime) + " " + hit.Label; } }
+
+        string Away
+        {
+            get
+            {
+                string a = DueDate.Away(hit.Date);
+                return a == "明天" ? "就是明天" : a == "后天" ? "就在后天" : a;
+            }
+        }
+
+        List<Timeline.Choice> Shown
+        {
+            get
+            {
+                // 最多两个按钮:默认的那个放前面,再加一个
+                Timeline.Choice pref = Timeline.Preferred(choices);
+                List<Timeline.Choice> l = new List<Timeline.Choice>();
+                l.Add(pref);
+                foreach (Timeline.Choice c in choices) if (c != pref && l.Count < 2 && c.Lead != -2) l.Add(c);
+                return l;
+            }
+        }
+
+        int ButtonW(string s) { return (int)Timeline.Measure(s, Gfx.UI) + Gfx.S(28); }
+
+        void Popup()
+        {
+            int iconSz = Gfx.S(38);
+            float tw = Math.Max(Timeline.Measure(Title + "  ·  " + Away, Gfx.Bold), Gfx.S(170));
+            tw = Math.Min(tw, Gfx.S(300));
+            int bw = 0;
+            foreach (Timeline.Choice c in Shown) bw += ButtonW(c.Text) + Gfx.S(8);
+            bw += Gfx.S(34) + Gfx.S(8);   // ⋯
+            int w = Gfx.S(16) + iconSz + Gfx.S(12) + (int)tw + Gfx.S(18) + bw + Gfx.S(30) + Gfx.S(6);
+            int h = Gfx.S(68);
+            Rectangle wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+            SetBounds(wa.Right - w - Pad - Gfx.S(10), wa.Bottom - h - Pad - Gfx.S(10) + Gfx.S(6), w + 2 * Pad, h + 2 * Pad);
+            shownAt = Gfx.Ms;
+            life.Start();
+            Appear();
+        }
+
+        protected override void PaintCard(Graphics g, Rectangle c)
+        {
+            Theme t = Theme.Cur;
+            int iconSz = Gfx.S(38);
+            Rectangle ic = new Rectangle(c.X + Gfx.S(16), c.Y + (c.Height - iconSz) / 2, iconSz, iconSz);
+            int right = c.Right - Gfx.S(8);
+            CloseGlyph(g, new Rectangle(right - Gfx.S(22), c.Y + (c.Height - Gfx.S(22)) / 2, Gfx.S(22), Gfx.S(22)), delegate { life.Stop(); Dismiss(); });
+            right -= Gfx.S(30);
+            int tx = ic.Right + Gfx.S(12);
+
+            if (made != null)
+            {
+                // 已设好:绿色的勾 + 什么时候提醒
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(52, 168, 98))) g.FillEllipse(b, ic);
+                using (Pen p = new Pen(Color.White, Gfx.F(2.4f)))
+                {
+                    p.StartCap = p.EndCap = LineCap.Round;
+                    p.LineJoin = LineJoin.Round;
+                    float s = iconSz;
+                    g.DrawLines(p, new PointF[] { new PointF(ic.X + s * 0.28f, ic.Y + s * 0.52f), new PointF(ic.X + s * 0.44f, ic.Y + s * 0.67f), new PointF(ic.X + s * 0.72f, ic.Y + s * 0.36f) });
+                }
+                int vw = ButtonW("查看");
+                Rectangle vb = new Rectangle(right - vw, c.Y + (c.Height - Gfx.S(32)) / 2, vw, Gfx.S(32));
+                Button(g, vb, "查看", false, delegate { life.Stop(); Dismiss(); Timeline.Open(); });
+                RectangleF tr = new RectangleF(tx, c.Y + Gfx.S(14), vb.X - tx - Gfx.S(12), Gfx.S(22));
+                Timeline.Txt(g, "已加入时光轴", Gfx.Bold, tr, t.Text, StringAlignment.Near, StringAlignment.Center, false);
+                Timeline.Txt(g, DueDate.Describe(made.At, true) + " " + DueDate.Week(made.At) + " 提醒你",
+                    Gfx.Small, new RectangleF(tx, tr.Bottom + Gfx.S(2), tr.Width, Gfx.S(18)), t.Sub, StringAlignment.Near, StringAlignment.Center, false);
+                return;
+            }
+
+            Timeline.DrawCalendar(g, ic, hit.Date.Day, Timeline.Urgency(hit.Date));
+            int by = c.Y + (c.Height - Gfx.S(32)) / 2;
+            Rectangle more = new Rectangle(right - Gfx.S(34), by, Gfx.S(34), Gfx.S(32));
+            Button(g, more, "⋯", false, delegate { MoreMenu(); });
+            int x = more.X - Gfx.S(8);
+            List<Timeline.Choice> shown = Shown;
+            for (int i = shown.Count - 1; i >= 0; i--)
+            {
+                Timeline.Choice ch = shown[i];
+                int bw = ButtonW(ch.Text);
+                Rectangle br = new Rectangle(x - bw, by, bw, Gfx.S(32));
+                Button(g, br, ch.Text, i == 0, delegate { Commit(ch.At); });
+                x = br.X - Gfx.S(8);
+            }
+            RectangleF t1 = new RectangleF(tx, c.Y + Gfx.S(13), x - tx - Gfx.S(10), Gfx.S(22));
+            float w1 = Timeline.Measure(g, Title, Gfx.Bold);
+            Timeline.Txt(g, Title, Gfx.Bold, t1, t.Text, StringAlignment.Near, StringAlignment.Center, false);
+            if (w1 + Gfx.S(20) < t1.Width)
+            {
+                RectangleF ta = new RectangleF(t1.X + w1 + Gfx.S(8), t1.Y, t1.Width - w1 - Gfx.S(8), t1.Height);
+                Timeline.Txt(g, "·  " + Away, Gfx.UI, ta, Timeline.Urgency(hit.Date), StringAlignment.Near, StringAlignment.Center, false);
+            }
+            string snip = Regex.Replace(text, @"\s+", " ").Trim();
+            Timeline.Txt(g, "要提醒你吗?  “" + snip + "”", Gfx.Small, new RectangleF(tx, t1.Bottom + Gfx.S(2), t1.Width, Gfx.S(18)), t.Sub,
+                StringAlignment.Near, StringAlignment.Center, false);
+        }
+
+        void Commit(DateTime at)
+        {
+            made = Timeline.Add(text, app, hit, at);
+            shownAt = Gfx.Ms;
+            HoverIdx = -1;
+            Render();
+        }
+
+        void MoreMenu()
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            foreach (Timeline.Choice c in choices)
+            {
+                Timeline.Choice cc = c;
+                m.Items.Add(c.Text + "(" + DueDate.Describe(c.At, true) + ")", null, delegate { Commit(cc.At); });
+            }
+            m.Items.Add(new ToolStripSeparator());
+            m.Items.Add("自定义时间…", null, delegate
+            {
+                DateTime v;
+                MenuOpen = true;
+                bool ok = Timeline.PickTime(null, "什么时候提醒你?", choices[0].At, out v);
+                MenuOpen = false;
+                if (ok) Commit(v);
+            });
+            m.Items.Add("这条不用提醒", null, delegate { life.Stop(); Dismiss(); });
+            ShowMenu(m, new Point(Right - Pad - Gfx.S(80), Bottom - Pad + Gfx.S(2)));
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            life.Stop();
+            if (current == this) current = null;
+            base.OnFormClosed(e);
+        }
+    }
+
+    // 到点了:屏幕右上角滑出的提醒卡片
+    class AlertCard : LayeredPopup
+    {
+        readonly Reminder r;
+        int slot;
+
+        public AlertCard(Reminder r) { this.r = r; }
+
+        static int CardW { get { return Gfx.S(388); } }
+        static int CardH { get { return Gfx.S(158); } }
+
+        Point SlotPos(int i)
+        {
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            return new Point(wa.Right - CardW - Pad - Gfx.S(14), wa.Top + Gfx.S(14) - Pad + Gfx.S(6) + i * (CardH + Gfx.S(10)));
+        }
+
+        public void Popup(int i)
+        {
+            slot = i;
+            Point p = SlotPos(i);
+            SetBounds(p.X, p.Y, CardW + 2 * Pad, CardH + 2 * Pad);
+            Appear();
+        }
+
+        public void MoveToSlot(int i)
+        {
+            if (i == slot || IsDisposed) return;
+            slot = i;
+            Point p = SlotPos(i);
+            Location = p;
+            Render();
+        }
+
+        protected override void PaintCard(Graphics g, Rectangle c)
+        {
+            Theme t = Theme.Cur;
+            Color urg = Timeline.Urgency(r.Due);
+            // 左边:大号日子 + 月份 / 星期
+            Rectangle dateCol = new Rectangle(c.X + Gfx.S(18), c.Y + Gfx.S(18), Gfx.S(64), Gfx.S(70));
+            Timeline.Txt(g, r.Due.Day.ToString(CultureInfo.InvariantCulture), Timeline.DayFont, new RectangleF(dateCol.X, dateCol.Y, dateCol.Width, Gfx.S(42)),
+                urg, StringAlignment.Center, StringAlignment.Center, false);
+            Timeline.Txt(g, r.Due.Month + "月 · " + DueDate.Week(r.Due), Gfx.Small, new RectangleF(dateCol.X - Gfx.S(6), dateCol.Y + Gfx.S(44), dateCol.Width + Gfx.S(12), Gfx.S(18)),
+                t.Sub, StringAlignment.Center, StringAlignment.Center, false);
+            using (Pen sep = new Pen(t.Dark ? Color.FromArgb(60, 255, 255, 255) : Color.FromArgb(24, 0, 0, 0)))
+                g.DrawLine(sep, dateCol.Right + Gfx.S(10), c.Y + Gfx.S(20), dateCol.Right + Gfx.S(10), c.Y + Gfx.S(92));
+
+            int tx = dateCol.Right + Gfx.S(22);
+            Rectangle close = new Rectangle(c.Right - Gfx.S(34), c.Y + Gfx.S(12), Gfx.S(22), Gfx.S(22));
+            CloseGlyph(g, close, delegate { Dismiss(); });
+            RectangleF head = new RectangleF(tx, c.Y + Gfx.S(16), close.X - tx - Gfx.S(6), Gfx.S(24));
+            // 小圆点 + 标题
+            float dot = Gfx.S(8);
+            using (SolidBrush b = new SolidBrush(urg)) g.FillEllipse(b, head.X, head.Y + (head.Height - dot) / 2, dot, dot);
+            string ttl = r.Headline + (r.HasTime ? "  " + r.Due.ToString("HH:mm", CultureInfo.InvariantCulture) : "");
+            Timeline.Txt(g, ttl, Gfx.HeaderFont, new RectangleF(head.X + dot + Gfx.S(8), head.Y, head.Width - dot - Gfx.S(8), head.Height), t.Text,
+                StringAlignment.Near, StringAlignment.Center, false);
+            RectangleF body = new RectangleF(tx, head.Bottom + Gfx.S(6), c.Right - tx - Gfx.S(18), Gfx.S(56));
+            Rectangle bodyR = Rectangle.Round(body);
+            HotArea(bodyR, delegate { Dismiss(); Timeline.Open(); });
+            Timeline.Txt(g, r.Snippet(140), Gfx.UI, body, IsHover(bodyR) ? t.Text : Theme.Blend(t.Text, t.Sub, 0.45), StringAlignment.Near, StringAlignment.Near, true);
+
+            // 底部:来源 + 按钮
+            int by = c.Bottom - Gfx.S(46);
+            Rectangle done = new Rectangle(c.Right - Gfx.S(18) - Gfx.S(84), by, Gfx.S(84), Gfx.S(32));
+            Button(g, done, "完成", true, delegate { Timeline.Complete(r, true); Dismiss(); });
+            Rectangle later = new Rectangle(done.X - Gfx.S(8) - Gfx.S(84), by, Gfx.S(84), Gfx.S(32));
+            Button(g, later, "稍后  ▾", false, delegate { LaterMenu(later); });
+            if (!string.IsNullOrEmpty(r.App))
+                Timeline.Txt(g, "来自 " + r.App, Gfx.Small, new RectangleF(c.X + Gfx.S(20), by, later.X - c.X - Gfx.S(28), Gfx.S(32)), t.Sub,
+                    StringAlignment.Near, StringAlignment.Center, false);
+        }
+
+        void LaterMenu(Rectangle anchor)
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            Timeline.FillChoicesMenu(m.Items, r, delegate(DateTime at) { Timeline.Reschedule(r, at); Dismiss(); });
+            ShowMenu(m, PointToScreen(new Point(anchor.X, anchor.Bottom + Gfx.S(4))));
+        }
+    }
+
+    // 选一个日期和时间
+    class PickTimeForm : Form
+    {
+        readonly DateTimePicker pick = new DateTimePicker();
+        public DateTime Value;
+
+        public PickTimeForm(string title, DateTime initial)
+        {
+            Text = Brand.Name + " · 时光轴";
+            try { if (Brand.LargeIcon != null) Icon = Brand.LargeIcon; } catch { }
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            MaximizeBox = MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            TopMost = true;
+            BackColor = SetPal.Back;
+            Font = Gfx.UI;
+            ClientSize = new Size(Gfx.S(360), Gfx.S(170));
+            Label l = new Label();
+            l.Text = title;
+            l.Font = Gfx.HeaderFont;
+            l.ForeColor = Theme.Cur.Text;
+            l.AutoSize = true;
+            l.Location = new Point(Gfx.S(24), Gfx.S(20));
+            Controls.Add(l);
+            pick.Format = DateTimePickerFormat.Custom;
+            pick.CustomFormat = "yyyy 年 M 月 d 日   HH:mm";
+            pick.ShowUpDown = false;
+            pick.Font = Gfx.Input;
+            pick.MinDate = DateTime.Today;
+            pick.Value = initial < DateTime.Now ? DateTime.Now.AddHours(1) : initial;
+            pick.SetBounds(Gfx.S(24), Gfx.S(58), ClientSize.Width - Gfx.S(48), Gfx.S(32));
+            Controls.Add(pick);
+            Btn ok = new Btn();
+            ok.Text = "确定";
+            ok.Primary = true;
+            ok.SetBounds(ClientSize.Width - Gfx.S(24 + 88), ClientSize.Height - Gfx.S(52), Gfx.S(88), Gfx.S(34));
+            ok.Click += delegate
+            {
+                Value = pick.Value;
+                if (Value <= DateTime.Now) Value = DateTime.Now.AddMinutes(1);
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            Controls.Add(ok);
+            Btn cancel = new Btn();
+            cancel.Text = "取消";
+            cancel.SetBounds(ok.Left - Gfx.S(10 + 80), ok.Top, Gfx.S(80), Gfx.S(34));
+            cancel.Click += delegate { DialogResult = DialogResult.Cancel; Close(); };
+            Controls.Add(cancel);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.DarkTitle(Handle, Theme.Cur.Dark);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+    }
+
+    // 时光轴窗口:按"已过期 / 今天 / 明天 / 本周 / 之后 / 已完成"排开
+    class TimelineForm : Form
+    {
+        readonly TimelineView view = new TimelineView();
+
+        public TimelineForm()
+        {
+            Text = "时光轴 · " + Brand.Name;
+            try { if (Brand.LargeIcon != null) Icon = Brand.LargeIcon; } catch { }
+            StartPosition = FormStartPosition.CenterScreen;
+            ShowInTaskbar = true;
+            BackColor = SetPal.Back;
+            Font = Gfx.UI;
+            KeyPreview = true;
+            MinimumSize = new Size(Gfx.S(440), Gfx.S(420));
+            ClientSize = new Size(Gfx.S(520), Gfx.S(640));
+            view.Dock = DockStyle.Fill;
+            Controls.Add(view);
+            Timeline.Changed += OnChanged;
+            Activated += delegate { view.Invalidate(); };
+        }
+
+        void OnChanged() { if (!IsDisposed) view.Invalidate(); }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.DarkTitle(Handle, Theme.Cur.Dark);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Escape) Close();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            Timeline.Changed -= OnChanged;
+            base.OnFormClosed(e);
+        }
+    }
+
+    class TimelineView : Control
+    {
+        class Row { public Reminder R; public Rectangle Rect, Ring, More; public string Group; }
+
+        readonly List<Row> rows = new List<Row>();
+        readonly List<KeyValuePair<int, string>> headers = new List<KeyValuePair<int, string>>();
+        int scroll, contentH;
+        Row hoverRow;
+        int hoverPart;   // 0 行  1 圆环(完成)  2 更多
+        readonly System.Windows.Forms.Timer clock = new System.Windows.Forms.Timer();
+
+        public TimelineView()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            clock.Interval = 60 * 1000;   // 每分钟刷新一下倒计时
+            clock.Tick += delegate { Invalidate(); };
+            clock.Start();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) clock.Dispose();
+            base.Dispose(disposing);
+        }
+
+        static string GroupOf(Reminder r)
+        {
+            if (r.Done) return "已完成";
+            int n = r.DaysLeft;
+            if (n < 0) return "已过期";
+            if (n == 0) return "今天";
+            if (n == 1) return "明天";
+            int toSunday = (7 - (int)DateTime.Today.DayOfWeek) % 7;
+            if (n <= toSunday) return "本周";
+            if (n <= 7) return "下周";
+            return "之后";
+        }
+
+        static readonly string[] Order = new string[] { "已过期", "今天", "明天", "本周", "下周", "之后", "已完成" };
+
+        int TopH { get { return Gfx.S(92); } }
+        int RowH { get { return Gfx.S(92); } }
+
+        void Build()
+        {
+            rows.Clear();
+            headers.Clear();
+            int y = TopH, x = Gfx.S(20), w = Width - Gfx.S(40);
+            List<Reminder> all = Timeline.Items.ToList();
+            foreach (string grp in Order)
+            {
+                List<Reminder> list = all.Where(r => GroupOf(r) == grp).ToList();
+                if (list.Count == 0) continue;
+                list = grp == "已完成" ? list.OrderByDescending(r => r.DoneAt).Take(30).ToList() : list.OrderBy(r => r.Due).ThenBy(r => r.At).ToList();
+                headers.Add(new KeyValuePair<int, string>(y, grp + "  " + list.Count));
+                y += Gfx.S(30);
+                foreach (Reminder r in list)
+                {
+                    Row row = new Row();
+                    row.R = r;
+                    row.Group = grp;
+                    row.Rect = new Rectangle(x, y, w, RowH);
+                    int rs = Gfx.S(40);
+                    row.Ring = new Rectangle(row.Rect.Right - Gfx.S(18) - rs, row.Rect.Y + (RowH - rs) / 2, rs, rs);
+                    row.More = new Rectangle(row.Ring.X - Gfx.S(36), row.Rect.Y + (RowH - Gfx.S(28)) / 2, Gfx.S(28), Gfx.S(28));
+                    rows.Add(row);
+                    y += RowH + Gfx.S(10);
+                }
+                y += Gfx.S(8);
+            }
+            contentH = y + Gfx.S(10);
+            scroll = Math.Max(0, Math.Min(scroll, contentH - Height));
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Theme t = Theme.Cur;
+            g.Clear(SetPal.Back);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Build();
+
+            // 顶部标题(固定不滚动)
+            int active = Timeline.ActiveCount;
+            int soon = Timeline.Items.Count(r => !r.Done && r.DaysLeft <= 3);
+
+            GraphicsState st = g.Save();
+            g.SetClip(new Rectangle(0, TopH - Gfx.S(6), Width, Height));
+            g.TranslateTransform(0, -scroll);
+            foreach (KeyValuePair<int, string> h in headers)
+            {
+                bool warn = h.Value.StartsWith("已过期") || h.Value.StartsWith("今天");
+                TextRenderer.DrawText(g, h.Value, SetPal.Header, new Rectangle(Gfx.S(26), h.Key + Gfx.S(4), Width - Gfx.S(52), Gfx.S(22)),
+                    warn ? Timeline.Red : t.Sub, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            }
+            foreach (Row row in rows)
+            {
+                if (row.Rect.Bottom - scroll < TopH - Gfx.S(10) || row.Rect.Y - scroll > Height) continue;
+                DrawRow(g, row);
+            }
+            g.Restore(st);
+
+            // 顶部
+            using (SolidBrush b = new SolidBrush(SetPal.Back)) g.FillRectangle(b, 0, 0, Width, TopH - Gfx.S(6));
+            TextRenderer.DrawText(g, "时光轴", SetPal.PageTitle, new Point(Gfx.S(22), Gfx.S(18)), t.Text, TextFormatFlags.NoPrefix);
+            string sub = active == 0 ? "没有进行中的提醒" : active + " 个进行中" + (soon > 0 ? "  ·  " + soon + " 个三天内到期" : "");
+            TextRenderer.DrawText(g, sub, Gfx.Small, new Point(Gfx.S(26), Gfx.S(58)), t.Sub, TextFormatFlags.NoPrefix);
+            if (scroll > 0)
+                using (Pen p = new Pen(SetPal.Sep)) g.DrawLine(p, 0, TopH - Gfx.S(7), Width, TopH - Gfx.S(7));
+
+            if (rows.Count == 0) DrawEmpty(g);
+
+            // 细滚动条
+            if (contentH > Height)
+            {
+                int vh = Height - TopH;
+                int th = Math.Max(Gfx.S(30), vh * vh / Math.Max(1, contentH - TopH));
+                int ty = TopH + (int)((long)(vh - th) * scroll / Math.Max(1, contentH - Height));
+                Gfx.FillRound(g, Color.FromArgb(t.Dark ? 90 : 70, t.Text), new Rectangle(Width - Gfx.S(8), ty, Gfx.S(5), th), 3);
+            }
+        }
+
+        void DrawEmpty(Graphics g)
+        {
+            Theme t = Theme.Cur;
+            int cx = Width / 2, cy = TopH + (Height - TopH) / 2 - Gfx.S(40);
+            Rectangle glow = new Rectangle(cx - Gfx.S(30), cy - Gfx.S(30), Gfx.S(60), Gfx.S(60));
+            Gfx.DrawGlow(g, glow, t.Accent, Gfx.S(40));
+            Timeline.DrawCalendar(g, new Rectangle(cx - Gfx.S(28), cy - Gfx.S(28), Gfx.S(56), Gfx.S(56)), DateTime.Today.Day, t.Accent);
+            TextRenderer.DrawText(g, "还没有提醒", Gfx.HeaderFont, new Rectangle(0, cy + Gfx.S(44), Width, Gfx.S(26)), t.Text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, "复制带有到期日期的文字时,拾光会问你要不要提醒;\n也可以在剪切板卡片上右键 → 加入时光轴。", Gfx.Small,
+                new Rectangle(Gfx.S(30), cy + Gfx.S(76), Width - Gfx.S(60), Gfx.S(44)), t.Sub,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        }
+
+        void DrawRow(Graphics g, Row row)
+        {
+            Theme t = Theme.Cur;
+            Reminder r = row.R;
+            Rectangle rc = row.Rect;
+            bool hov = row == hoverRow;
+            Color card = SetPal.Card;
+            if (hov) card = Theme.Blend(card, t.Text, t.Dark ? 0.04 : 0.02);
+            Gfx.FillRound(g, card, rc, 14);
+            if (!t.Dark) Gfx.DrawRound(g, Color.FromArgb(14, 0, 0, 0), rc, 14, 1f);
+            Color urg = r.Done ? t.Sub : Timeline.Urgency(r.Due);
+            Color textC = r.Done ? t.Sub : t.Text;
+
+            // 日期块
+            Rectangle dc = new Rectangle(rc.X + Gfx.S(8), rc.Y, Gfx.S(70), rc.Height);
+            TextRenderer.DrawText(g, r.Due.Day.ToString(CultureInfo.InvariantCulture), Timeline.DayFont, new Rectangle(dc.X, dc.Y + Gfx.S(12), dc.Width, Gfx.S(40)),
+                r.Done ? t.Sub : urg, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, r.Due.Month + "月 · " + DueDate.Week(r.Due), Gfx.Small, new Rectangle(dc.X - Gfx.S(4), dc.Y + Gfx.S(54), dc.Width + Gfx.S(8), Gfx.S(18)),
+                t.Sub, card, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            using (Pen sep = new Pen(SetPal.Sep)) g.DrawLine(sep, dc.Right + Gfx.S(6), rc.Y + Gfx.S(18), dc.Right + Gfx.S(6), rc.Bottom - Gfx.S(18));
+
+            int tx = dc.Right + Gfx.S(20);
+            int tr = (hov && !r.Done ? row.More.X : row.Ring.X) - Gfx.S(10);
+            if (hov && r.Done) tr = row.More.X - Gfx.S(10);
+            string head = r.Done ? "已完成 · " + DueDate.Md(r.Due) + " " + r.Label : r.Headline;
+            if (r.HasTime && !r.Done) head += "  " + r.Due.ToString("HH:mm", CultureInfo.InvariantCulture);
+            TextRenderer.DrawText(g, head, Gfx.Bold, new Rectangle(tx, rc.Y + Gfx.S(12), tr - tx, Gfx.S(22)), textC, card,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+            TextRenderer.DrawText(g, r.Snippet(90), Gfx.UI, new Rectangle(tx, rc.Y + Gfx.S(34), tr - tx, Gfx.S(22)), r.Done ? t.Sub : Theme.Blend(t.Text, t.Sub, 0.35), card,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+            string meta = r.Done ? (r.DoneAt.Year > 2000 ? "完成于 " + DueDate.Describe(r.DoneAt, true) : "")
+                : (r.Notified && r.At <= DateTime.Now ? "已提醒" : "提醒:" + DueDate.Describe(r.At, true) + " " + DueDate.Week(r.At));
+            if (!string.IsNullOrEmpty(r.App)) meta += (meta.Length > 0 ? "  ·  " : "") + r.App;
+            TextRenderer.DrawText(g, meta, Gfx.Small, new Rectangle(tx, rc.Y + Gfx.S(58), tr - tx, Gfx.S(20)), t.Sub, card,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+
+            // 右边:倒计时圆环;鼠标移上去变成"完成"的勾
+            Rectangle ring = row.Ring;
+            bool ringHot = hov && hoverPart == 1;
+            if (r.Done)
+            {
+                using (SolidBrush b = new SolidBrush(ringHot ? Theme.Blend(t.Sub, card, 0.5) : Color.FromArgb(52, 168, 98))) g.FillEllipse(b, Shrink(ring, Gfx.S(6)));
+                Check(g, Shrink(ring, Gfx.S(6)), Color.White);
+            }
+            else if (ringHot)
+            {
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(52, 168, 98))) g.FillEllipse(b, ring);
+                Check(g, ring, Color.White);
+            }
+            else
+            {
+                double total = Math.Max(1, (r.Due - r.Created).TotalMinutes);
+                double left = Math.Max(0, (r.Due - DateTime.Now).TotalMinutes);
+                float frac = (float)Math.Max(0.02, Math.Min(1, left / total));
+                Rectangle rr = Shrink(ring, Gfx.S(2));
+                using (Pen bg = new Pen(Color.FromArgb(t.Dark ? 50 : 30, t.Text), Gfx.F(3.2f))) g.DrawEllipse(bg, rr);
+                using (Pen fg = new Pen(urg, Gfx.F(3.2f)))
+                {
+                    fg.StartCap = fg.EndCap = LineCap.Round;
+                    g.DrawArc(fg, rr, -90, 360 * frac);
+                }
+                int n = r.DaysLeft;
+                string inner = n > 0 ? n.ToString(CultureInfo.InvariantCulture) : (n == 0 ? "今" : "!");
+                TextRenderer.DrawText(g, inner, Timeline.RingFont, ring, n <= 0 ? Timeline.Red : t.Text, card,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            }
+            if (hov)
+            {
+                bool mh = hoverPart == 2;
+                if (mh) Gfx.FillRound(g, t.Hover, row.More, 99);
+                int cx = row.More.X + row.More.Width / 2, cy = row.More.Y + row.More.Height / 2;
+                using (SolidBrush b = new SolidBrush(t.Sub))
+                    for (int k = -1; k <= 1; k++) g.FillEllipse(b, cx + k * Gfx.S(5) - Gfx.S(2), cy - Gfx.S(2), Gfx.S(4), Gfx.S(4));
+            }
+        }
+
+        static Rectangle Shrink(Rectangle r, int k) { r.Inflate(-k, -k); return r; }
+
+        static void Check(Graphics g, Rectangle r, Color c)
+        {
+            using (Pen p = new Pen(c, Gfx.F(2.4f)))
+            {
+                p.StartCap = p.EndCap = LineCap.Round;
+                p.LineJoin = LineJoin.Round;
+                float s = r.Width;
+                g.DrawLines(p, new PointF[] { new PointF(r.X + s * 0.28f, r.Y + s * 0.52f), new PointF(r.X + s * 0.44f, r.Y + s * 0.67f), new PointF(r.X + s * 0.72f, r.Y + s * 0.36f) });
+            }
+        }
+
+        Row HitRow(Point p, out int part)
+        {
+            part = 0;
+            if (p.Y < TopH - Gfx.S(6)) return null;
+            Point q = new Point(p.X, p.Y + scroll);
+            foreach (Row r in rows)
+            {
+                if (!r.Rect.Contains(q)) continue;
+                Rectangle ring = r.Ring; ring.Inflate(Gfx.S(4), Gfx.S(4));
+                if (ring.Contains(q)) part = 1;
+                else if (r.More.Contains(q)) part = 2;
+                return r;
+            }
+            return null;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int part;
+            Row r = HitRow(e.Location, out part);
+            if (r != hoverRow || part != hoverPart) { hoverRow = r; hoverPart = part; Invalidate(); }
+            Cursor = r != null && part > 0 ? Cursors.Hand : Cursors.Default;
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            hoverRow = null;
+            Invalidate();
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            scroll = Math.Max(0, Math.Min(Math.Max(0, contentH - Height), scroll - e.Delta * Gfx.S(60) / 120));
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            int part;
+            Row row = HitRow(e.Location, out part);
+            if (row == null) return;
+            Reminder r = row.R;
+            if (e.Button == MouseButtons.Left && part == 1) { Timeline.Complete(r, !r.Done); return; }
+            Menu(r, e.Location);
+        }
+
+        void Menu(Reminder r, Point at)
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            if (r.Done) m.Items.Add("恢复为进行中", null, delegate { Timeline.Complete(r, false); });
+            else
+            {
+                m.Items.Add("标记完成", null, delegate { Timeline.Complete(r, true); });
+                ToolStripMenuItem when = new ToolStripMenuItem("修改提醒时间");
+                Timeline.FillChoicesMenu(when.DropDownItems, r, delegate(DateTime v) { Timeline.Reschedule(r, v); });
+                m.Items.Add(when);
+            }
+            m.Items.Add("复制原文", null, delegate { try { Clipboard.SetText(r.Text); } catch { } });
+            m.Items.Add(new ToolStripSeparator());
+            m.Items.Add("删除", null, delegate { Timeline.Remove(r); });
+            Theme.StyleMenu(m);
+            m.Show(this, at);
+        }
+    }
+
     class MainForm : Form
     {
         const int HotkeyId = 1;
@@ -11367,6 +13015,8 @@ namespace Glean
         DateTime ignoreUntil = DateTime.MinValue;
         IntPtr prevWnd = IntPtr.Zero;
         readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer timelineTimer = new System.Windows.Forms.Timer();
+        ToolStripMenuItem timelineItem;
         bool updateBalloon;
 
         public MainForm()
@@ -11415,6 +13065,11 @@ namespace Glean
             };
             updateTimer.Start();
 
+            // 时光轴:每 20 秒看一眼有没有到点的提醒(开机时错过的,也会在这里补上)
+            timelineTimer.Interval = 20 * 1000;
+            timelineTimer.Tick += delegate { try { Timeline.Tick(); } catch { } };
+            timelineTimer.Start();
+
             // 启动 3 秒后,在后台把面板的窗口先建好:第一次按 Win + V 不用再等
             System.Windows.Forms.Timer warm = new System.Windows.Forms.Timer();
             warm.Interval = 3000;
@@ -11449,6 +13104,9 @@ namespace Glean
             openItem.Click += delegate { TogglePopup(false); };
             m.Items.Add(openItem);
             m.Items.Add("打开文件夹", null, delegate { shelf.ShowFiles(); });
+            timelineItem = new ToolStripMenuItem("时光轴");
+            timelineItem.Click += delegate { Timeline.Open(); };
+            m.Items.Add(timelineItem);
             m.Items.Add("检查更新…", null, delegate { CheckUpdateNow(); });
             m.Items.Add("设置…", null, delegate { ShowSettings(); });
             m.Items.Add(new ToolStripSeparator());
@@ -11485,6 +13143,9 @@ namespace Glean
             {
                 BuildPauseMenu(pause);
                 auto.Checked = Startup.Get();
+                timelineItem.Visible = Config.TimelineOn;
+                int act = Config.TimelineOn ? Timeline.ActiveCount : 0;
+                timelineItem.Text = act > 0 ? "时光轴(" + act + ")" : "时光轴";
                 Theme.Refresh();
                 Theme.StyleMenu(m);
             };
@@ -11824,6 +13485,12 @@ namespace Glean
                 string appPath, appName;
                 Util.ClipboardOwnerApp(out appPath, out appName);
                 hist.SetSource(added, appPath, appName);
+                // 时光轴:文字里有将来的到期日,问一句要不要提醒(放到剪切板处理完之后再弹)
+                if (Config.TimelineOn && !added.IsFiles && !added.IsImage && added.Text != null)
+                {
+                    string txt = added.Text, an = added.AppName ?? appName;
+                    BeginInvoke(new MethodInvoker(delegate { try { Timeline.OnCopied(txt, an); } catch { } }));
+                }
             }
         }
 

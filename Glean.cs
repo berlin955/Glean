@@ -8178,6 +8178,7 @@ namespace Glean
                 BuildBackdrop(new Rectangle(lx, ly, lw, lh));
                 Perf.Mark("glass");
                 SetBounds(lx, ly + Gfx.S(10), lw, lh);
+                WarmPaint();
                 Show();
                 Perf.Mark("show");
                 Activate();
@@ -8200,9 +8201,8 @@ namespace Glean
             BuildBackdrop(new Rectangle(wa.Left + m, capTop, wa.Width - 2 * m, wa.Bottom - mb - capTop));
             Perf.Mark("glass");
             SetBounds(wa.Left + m, scr.Bounds.Bottom, wa.Width - 2 * m, h);
+            WarmPaint();
             Show();
-            // 面板这时还在屏幕下面:先把里面的东西全部画好再开始滑,画得慢也只是晚一点出来,不会卡在半路
-            PaintNow();
             Perf.Mark("show");
             Activate();
             Native.SetForegroundWindow(Handle);
@@ -8212,11 +8212,22 @@ namespace Glean
             StartSlide(scr.Bounds.Bottom, wa.Bottom - h - mb, 480);
         }
 
-        [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr rgn, int flags);
+        // 第一次弹出(还没预热过)时,先在内存里把卡片完整画一遍:卡片图、图标、字体都准备好了再滑出来。
+        // 只在屏幕外"显示"是不够的:窗口看不见的部分系统根本不会去画,要等滑进屏幕才画,就会卡在半路
+        bool warmed;
 
-        void PaintNow()
+        void WarmPaint()
         {
-            try { RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0080 | 0x0100); } catch { }   // 重画 + 包括子控件 + 立即
+            if (warmed) return;
+            warmed = true;
+            try
+            {
+                Control c = filesMode ? (Control)fileView : (Control)strip;
+                if (c.Width > 0 && c.Height > 0)
+                    using (Bitmap off = new Bitmap(c.Width, c.Height))
+                        c.DrawToBitmap(off, new Rectangle(0, 0, off.Width, off.Height));
+            }
+            catch { }
         }
 
         void StartSlide(int from, int to, int ms)
@@ -8916,6 +8927,7 @@ namespace Glean
         public void Prewarm()
         {
             CreateHandles(this);
+            warmed = true;
             IntPtr q = quick.Handle;
             if (Visible) return;
             try

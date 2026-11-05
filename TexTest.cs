@@ -128,6 +128,21 @@ static class TexTest
             foreach (Form f in Application.OpenForms) if (f is Glean.TimelineForm) tw = f;
             tw.Location = new Point(20, 20); Pump(400);
             Shot("timeline", tw.Bounds);
+            Glean.Config.ThemeMode = 2; Glean.Theme.Refresh();
+            for (int k = 0; k < 6; k++) Glean.Timeline.Items.Add(R("测试提醒第 " + k + " 条,到期时间较远", 40 + k * 50, 39 + k * 50, "到期", false, false));
+            tw.Close(); Pump(200);
+            Glean.Timeline.Open(); Pump(800);
+            foreach (Form f in Application.OpenForms) if (f is Glean.TimelineForm) tw = f;
+            tw.Location = new Point(20, 20); Pump(300);
+            Control view = tw.Controls[0];
+            view.GetType().GetField("scroll", NP).SetValue(view, 333); view.Invalidate(); Pump(400);
+            Shot("timeline-scrolled", tw.Bounds);
+            tw.Close(); Pump(200);
+            Glean.Config.ThemeMode = 1; Glean.Theme.Refresh();
+            Glean.Timeline.Items.RemoveRange(2, 6);
+            Glean.Timeline.Open(); Pump(800);
+            foreach (Form f in Application.OpenForms) if (f is Glean.TimelineForm) tw = f;
+            tw.Location = new Point(20, 20); Pump(300);
 
             foreach (int mode in new int[] { 1, 2 })
             {

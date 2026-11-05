@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.30.0.0")]
-[assembly: AssemblyFileVersion("0.30.0.0")]
+[assembly: AssemblyVersion("0.31.0.0")]
+[assembly: AssemblyFileVersion("0.31.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,7 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.30";
+        public const string Version = "0.31";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -2831,7 +2831,12 @@ namespace Glean
         {
             try
             {
-                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(Invalidate));
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(delegate
+                {
+                    // 面板正在滑出时先不重画(等停稳再一起刷新),免得滑到一半顿一下
+                    if (ShelfForm.Sliding) { ShelfForm.PendingRepaint = true; return; }
+                    Invalidate();
+                }));
             }
             catch { }
         }
@@ -4778,7 +4783,12 @@ namespace Glean
         {
             try
             {
-                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(Invalidate));
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(new MethodInvoker(delegate
+                {
+                    // 面板正在滑出时先不重画(等停稳再一起刷新),免得滑到一半顿一下
+                    if (ShelfForm.Sliding) { ShelfForm.PendingRepaint = true; return; }
+                    Invalidate();
+                }));
             }
             catch { }
         }
@@ -8168,6 +8178,7 @@ namespace Glean
                 BuildBackdrop(new Rectangle(lx, ly, lw, lh));
                 Perf.Mark("glass");
                 SetBounds(lx, ly + Gfx.S(10), lw, lh);
+                WarmPaint();
                 Show();
                 Perf.Mark("show");
                 Activate();
@@ -8190,6 +8201,7 @@ namespace Glean
             BuildBackdrop(new Rectangle(wa.Left + m, capTop, wa.Width - 2 * m, wa.Bottom - mb - capTop));
             Perf.Mark("glass");
             SetBounds(wa.Left + m, scr.Bounds.Bottom, wa.Width - 2 * m, h);
+            WarmPaint();
             Show();
             Perf.Mark("show");
             Activate();
@@ -8200,6 +8212,24 @@ namespace Glean
             StartSlide(scr.Bounds.Bottom, wa.Bottom - h - mb, 480);
         }
 
+        // 第一次弹出(还没预热过)时,先在内存里把卡片完整画一遍:卡片图、图标、字体都准备好了再滑出来。
+        // 只在屏幕外"显示"是不够的:窗口看不见的部分系统根本不会去画,要等滑进屏幕才画,就会卡在半路
+        bool warmed;
+
+        void WarmPaint()
+        {
+            if (warmed) return;
+            warmed = true;
+            try
+            {
+                Control c = filesMode ? (Control)fileView : (Control)strip;
+                if (c.Width > 0 && c.Height > 0)
+                    using (Bitmap off = new Bitmap(c.Width, c.Height))
+                        c.DrawToBitmap(off, new Rectangle(0, 0, off.Width, off.Height));
+            }
+            catch { }
+        }
+
         void StartSlide(int from, int to, int ms)
         {
             slideFrom = from;
@@ -8208,12 +8238,22 @@ namespace Glean
             slideStart = Gfx.Ms;
             if (!slideHiRes) { slideHiRes = true; Gfx.HiRes(true); }
             Top = from;
+            Sliding = true;
             slide.Start();
         }
+
+        public static bool Sliding, PendingRepaint;
 
         void StopSlide()
         {
             slide.Stop();
+            Sliding = false;
+            if (PendingRepaint)
+            {
+                PendingRepaint = false;
+                cardView.Invalidate();
+                listView.Invalidate();
+            }
             if (slideHiRes) { slideHiRes = false; Gfx.HiRes(false); }
         }
 
@@ -8887,6 +8927,7 @@ namespace Glean
         public void Prewarm()
         {
             CreateHandles(this);
+            warmed = true;
             IntPtr q = quick.Handle;
             if (Visible) return;
             try
@@ -13719,9 +13760,9 @@ namespace Glean
             timelineTimer.Tick += delegate { try { Timeline.Tick(); } catch { } };
             timelineTimer.Start();
 
-            // 启动 3 秒后,在后台把面板的窗口先建好:第一次按 Win + V 不用再等
+            // 启动 1 秒后,把面板的窗口先建好、先画一遍:第一次按 Win + V 不用再等
             System.Windows.Forms.Timer warm = new System.Windows.Forms.Timer();
-            warm.Interval = 3000;
+            warm.Interval = 1000;
             warm.Tick += delegate
             {
                 warm.Stop();
@@ -13731,6 +13772,32 @@ namespace Glean
             warm.Start();
 
             IntPtr unused = this.Handle;   // 强制创建窗口句柄,用来接收剪切板和热键消息
+        }
+
+        // 刚开机 / 刚启动时,程序里的代码都还没编译成机器码,第一次用到时才现编,这就是"第一次呼出卡一下"的主要原因。
+        // 启动时在后台低优先级线程上把所有代码提前编译一遍(不占界面线程,不影响启动速度)
+        internal static void PreJit()
+        {
+            Thread t = new Thread(delegate()
+            {
+                try
+                {
+                    foreach (Type ty in typeof(MainForm).Assembly.GetTypes())
+                    {
+                        if (ty.IsGenericTypeDefinition || ty.IsInterface) continue;
+                        foreach (MethodBase mb in ty.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                                                    .Cast<MethodBase>().Concat(ty.GetConstructors(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)))
+                        {
+                            if (mb.IsAbstract || mb.ContainsGenericParameters) continue;
+                            try { System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(mb.MethodHandle); } catch { }
+                        }
+                    }
+                }
+                catch { }
+            });
+            t.IsBackground = true;
+            t.Priority = ThreadPriority.BelowNormal;
+            t.Start();
         }
 
         // 始终保持不可见
@@ -14239,6 +14306,7 @@ namespace Glean
                 }
                 catch { }
                 Theme.Refresh();
+                MainForm.PreJit();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new MainForm());

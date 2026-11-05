@@ -11614,9 +11614,16 @@ namespace Glean
             int lineEnd = s.IndexOf('\n', end);
             if (lineEnd < 0) lineEnd = s.Length;
             int a = Math.Max(lineStart, m.Index - 24), b = Math.Min(lineEnd, end + 16);
-            Match k = ReKw.Match(s.Substring(a, b - a));
-            h.Strong = k.Success;
-            if (k.Success) h.Label = LabelOf(k.Value);
+            // 取离日期最近的那个关键词("报名截止 12/1" → 截止)
+            Match k = null;
+            int bestDist = int.MaxValue, center = m.Index - a;
+            foreach (Match km in ReKw.Matches(s.Substring(a, b - a)))
+            {
+                int dist = km.Index + km.Length <= center ? center - (km.Index + km.Length) : Math.Max(0, km.Index - (end - a));
+                if (dist < bestDist) { bestDist = dist; k = km; }
+            }
+            h.Strong = k != null;
+            if (k != null) h.Label = LabelOf(k.Value);
             if (needKw && !h.Strong) return;
 
             // 只要将来的日子(当天带具体时间、且还没过的也算)

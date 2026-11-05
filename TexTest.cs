@@ -9,6 +9,9 @@ using System.Threading;
 using System.Windows.Forms;
 static class TexTest
 {
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr d, int x, int y, int w, int h, IntPtr s, int sx, int sy, int op);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
     static void Out(string s) { File.AppendAllText("out.txt", s + "\r\n"); }
     static void Pump(int ms) { Stopwatch w = Stopwatch.StartNew(); while (w.ElapsedMilliseconds < ms) { Application.DoEvents(); Thread.Sleep(5); } }
     static readonly BindingFlags NP = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
@@ -16,7 +19,12 @@ static class TexTest
     {
         using (Bitmap b = new Bitmap(r.Width, r.Height))
         {
-            using (Graphics g = Graphics.FromImage(b)) g.CopyFromScreen(r.Location, Point.Empty, r.Size, CopyPixelOperation.SourceCopy | CopyPixelOperation.CaptureBlt);
+            using (Graphics g = Graphics.FromImage(b))
+            {
+                IntPtr dst = g.GetHdc(); IntPtr src = GetDC(IntPtr.Zero);
+                BitBlt(dst, 0, 0, r.Width, r.Height, src, r.X, r.Y, 0x00CC0020 | 0x40000000);
+                ReleaseDC(IntPtr.Zero, src); g.ReleaseHdc(dst);
+            }
             using (MemoryStream ms = new MemoryStream())
             {
                 b.Save(ms, ImageFormat.Png);

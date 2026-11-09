@@ -31,12 +31,22 @@ jobs:
           $ver = $m.Matches[0].Groups[1].Value
           if ($ver -ne $tag) { Write-Error "Glean.cs 里的版本号是 $ver,标签是 $tag,两者要一致"; exit 1 }
 
+      # 二维码 / 条形码识别用开源的 ZXing.Net(Apache 2.0),从 NuGet 下载固定版本并核对校验值,打包进 Glean.exe
+      - name: 下载 ZXing.Net
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.nuget.org/api/v2/package/ZXing.Net/0.16.9 -OutFile zxing.zip
+          Expand-Archive zxing.zip zxing-pkg
+          Copy-Item zxing-pkg/lib/net40/zxing.dll zxing.dll
+          $h = (Get-FileHash zxing.dll -Algorithm SHA256).Hash
+          if ($h -ne "C15741D83E78B0287A9034D583EC4E98903C56B1EEDECD43B550AC483C87E29E") { Write-Error "zxing.dll 校验值不对:$h"; exit 1 }
+
       - name: 编译 Glean.exe 和 Glean-Setup.exe
         shell: cmd
         run: |
           set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          set "COMMON=/nologo /optimize /target:winexe /codepage:65001 /win32manifest:Glean.manifest /win32icon:Glean.ico /resource:Glean.ico,Glean.ico /reference:System.Windows.Forms.dll /reference:System.Drawing.dll"
-          "%CSC%" %COMMON% /out:Glean.exe Glean.cs || exit /b 1
+          set "COMMON=/nologo /optimize /target:winexe /codepage:65001 /win32manifest:Glean.manifest /win32icon:Glean.ico /resource:Glean.ico,Glean.ico /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:zxing.dll"
+          "%CSC%" %COMMON% /resource:zxing.dll,zxing.dll /out:Glean.exe Glean.cs || exit /b 1
           "%CSC%" %COMMON% /main:Glean.SetupProgram /resource:Glean.exe,payload.exe /out:Glean-Setup.exe Glean.cs Setup.cs || exit /b 1
 
       - name: 保存编译结果

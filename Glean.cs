@@ -14098,7 +14098,8 @@ namespace Glean
             if (longSide > 2200) scale = 2200f / longSide;
             else if (longSide < 480) scale = Math.Min(3f, 960f / Math.Max(1, longSide));
             Try(src, scale, qrOnly, found);
-            if ((found.Count == 0 || thorough) && scale < 1f && longSide <= 8000) Try(src, 1f, qrOnly, found);
+            if (found.Count == 0 && scale < 1f && longSide <= 8000) Try(src, 1f, qrOnly, found);
+            else if (thorough && scale < 1f && longSide <= 8000) Try(src, 1f, true, found);   // 原图再找一遍,只找二维码(条形码缩小后一般也认得出)
             return found;
         }
 
@@ -14188,9 +14189,10 @@ namespace Glean
                 if (pts == null || pts.Length < 2) return fallback;
                 float px0 = Math.Min(pts[0].X, pts[pts.Length - 1].X), px1 = Math.Max(pts[0].X, pts[pts.Length - 1].X);
                 int yRow = (int)((pts[0].Y + pts[pts.Length - 1].Y) / 2);
-                int x0 = Math.Max(0, (int)px0), x1 = Math.Min(b.Width - 1, (int)px1);
-                int span = x1 - x0;
+                int span = (int)(px1 - px0);
                 if (span < 10 || Math.Abs(pts[0].Y - pts[pts.Length - 1].Y) > span * 0.1f) return fallback;   // 斜着 / 竖着的条码不细算
+                // 两个端点不一定在条码的最外边:左右各多看 35%
+                int x0 = Math.Max(0, (int)(px0 - span * 0.35f)), x1 = Math.Min(b.Width - 1, (int)(px1 + span * 0.35f));
                 int y0 = Math.Max(0, yRow - span), y1 = Math.Min(b.Height - 1, yRow + span);
                 Rectangle area = new Rectangle(0, y0, b.Width, y1 - y0 + 1);
                 BitmapData d = b.LockBits(area, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);

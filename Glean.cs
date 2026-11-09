@@ -14218,8 +14218,11 @@ namespace Glean
                 }
                 finally { b.UnlockBits(d); }
                 // 以交替最多的那一行为准,上下延伸到交替数掉到一半以下为止
-                int best = 0;
-                for (int yy = 0; yy < trans.Length; yy++) if (trans[yy] > trans[best] || (trans[yy] == trans[best] && Math.Abs(yy + y0 - yRow) < Math.Abs(best + y0 - yRow))) best = yy;
+                // 只在识别出的那一行附近找(上下各 40% 宽度),免得跑到旁边另一个条码上
+                int win = (int)(span * 0.4f), best = -1;
+                for (int yy = Math.Max(0, yRow - y0 - win); yy < Math.Min(trans.Length, yRow - y0 + win); yy++)
+                    if (best < 0 || trans[yy] > trans[best]) best = yy;
+                if (best < 0) return fallback;
                 int need = Math.Max(8, trans[best] / 2);
                 int top = best, bottom = best;
                 while (top > 0 && trans[top - 1] >= need) top--;

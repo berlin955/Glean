@@ -4262,11 +4262,11 @@ namespace Glean
             scanKey.Win = false; scanKey.Key = Config.ScanKey;
             scanKey.Height = Gfx.S(32);
             g1.AddRow("屏幕扫码", "找出屏幕上所有的二维码和条形码", scanKey, Gfx.S(210));
-            g1.AddRow("使用 Win + V", "替代系统自带的剪切板历史", Switch(tWinV, Config.WinV), Gfx.S(52));
-            y = AddGroup(p, y, "全局快捷键", g1, "管理员身份运行的窗口里 Win + V 可能仍弹出系统面板,可改用上面的快捷键。");
+            g1.AddRow("使用 Win + V", "替代系统自带的剪切板历史(管理员身份运行的窗口里可能无效)", Switch(tWinV, Config.WinV), Gfx.S(52));
+            y = AddGroup(p, y, "全局快捷键", g1, null);
 
             SettingsGroup g2 = new SettingsGroup();
-            int rh = Gfx.S(36);
+            int rh = Gfx.S(31);
             g2.AddRow("粘贴 / 打开", null, new KeyCaps("Enter"), Gfx.S(160), rh);
             g2.AddRow("快速预览", null, new KeyCaps("空格"), Gfx.S(160), rh);
             g2.AddRow("切换剪切板 / 文件夹", null, new KeyCaps("Ctrl", "Tab"), Gfx.S(160), rh);
@@ -14087,7 +14087,10 @@ namespace Glean
         };
 
         // 大图先缩小再识别(快),没找到再用原图试一次;很小的图放大一点(细小的码更容易认出来)
-        public static List<Code> Scan(Bitmap src, bool qrOnly)
+        public static List<Code> Scan(Bitmap src, bool qrOnly) { return Scan(src, qrOnly, false); }
+
+        // thorough = 屏幕扫码:缩小找过之后,再用原图找一遍(屏幕上的小码缩小后可能认不出来)
+        public static List<Code> Scan(Bitmap src, bool qrOnly, bool thorough)
         {
             List<Code> found = new List<Code>();
             int longSide = Math.Max(src.Width, src.Height);
@@ -14095,7 +14098,7 @@ namespace Glean
             if (longSide > 2200) scale = 2200f / longSide;
             else if (longSide < 480) scale = Math.Min(3f, 960f / Math.Max(1, longSide));
             Try(src, scale, qrOnly, found);
-            if (found.Count == 0 && scale < 1f && longSide <= 6000) Try(src, 1f, qrOnly, found);
+            if ((found.Count == 0 || thorough) && scale < 1f && longSide <= 8000) Try(src, 1f, qrOnly, found);
             return found;
         }
 
@@ -14139,6 +14142,7 @@ namespace Glean
                     c.Text = x.Text;
                     c.Format = fmt;
                     c.Box = BoxOf(x.ResultPoints, c.IsQr, scale, src.Width, src.Height);
+                    if (!c.IsQr) c.Box = Refine1D(b, x.ResultPoints, scale, c.Box, src.Width, src.Height);
                     found.Add(c);
                 }
             }
@@ -14174,6 +14178,60 @@ namespace Glean
             r = new RectangleF(r.X / scale, r.Y / scale, r.Width / scale, r.Height / scale);
             r.Intersect(new RectangleF(0, 0, w, h));
             return r;
+        }
+
+        // 条形码只给了一行上的两个端点(而且那一行不一定在条码中间):在图上逐行看黑白交替,找出条码真正的上下边和左右边
+        static RectangleF Refine1D(Bitmap b, ZXing.ResultPoint[] pts, float scale, RectangleF fallback, int w0, int h0)
+        {
+            try
+            {
+                if (pts == null || pts.Length < 2) return fallback;
+                float px0 = Math.Min(pts[0].X, pts[pts.Length - 1].X), px1 = Math.Max(pts[0].X, pts[pts.Length - 1].X);
+                int yRow = (int)((pts[0].Y + pts[pts.Length - 1].Y) / 2);
+                int x0 = Math.Max(0, (int)px0), x1 = Math.Min(b.Width - 1, (int)px1);
+                int span = x1 - x0;
+                if (span < 10 || Math.Abs(pts[0].Y - pts[pts.Length - 1].Y) > span * 0.1f) return fallback;   // 斜着 / 竖着的条码不细算
+                int y0 = Math.Max(0, yRow - span), y1 = Math.Min(b.Height - 1, yRow + span);
+                Rectangle area = new Rectangle(0, y0, b.Width, y1 - y0 + 1);
+                BitmapData d = b.LockBits(area, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                int[] trans = new int[area.Height];
+                int[] left = new int[area.Height], right = new int[area.Height];
+                try
+                {
+                    byte[] row = new byte[Math.Abs(d.Stride)];
+                    for (int yy = 0; yy < area.Height; yy++)
+                    {
+                        Marshal.Copy(d.Scan0 + yy * d.Stride, row, 0, row.Length);
+                        bool prev = false;
+                        int n = 0, first = -1, last = -1;
+                        for (int xx = x0; xx <= x1; xx++)
+                        {
+                            int i = xx * 3;
+                            bool dark = (row[i] + row[i + 1] * 2 + row[i + 2]) < 4 * 128;
+                            if (xx > x0 && dark != prev) { n++; if (first < 0) first = xx; last = xx; }
+                            prev = dark;
+                        }
+                        trans[yy] = n; left[yy] = first; right[yy] = last;
+                    }
+                }
+                finally { b.UnlockBits(d); }
+                // 以交替最多的那一行为准,上下延伸到交替数掉到一半以下为止
+                int best = 0;
+                for (int yy = 0; yy < trans.Length; yy++) if (trans[yy] > trans[best] || (trans[yy] == trans[best] && Math.Abs(yy + y0 - yRow) < Math.Abs(best + y0 - yRow))) best = yy;
+                int need = Math.Max(8, trans[best] / 2);
+                int top = best, bottom = best;
+                while (top > 0 && trans[top - 1] >= need) top--;
+                while (bottom < trans.Length - 1 && trans[bottom + 1] >= need) bottom++;
+                int lx = int.MaxValue, rx = int.MinValue;
+                for (int yy = top; yy <= bottom; yy++) if (left[yy] >= 0) { lx = Math.Min(lx, left[yy]); rx = Math.Max(rx, right[yy]); }
+                if (lx > rx || bottom - top < 4) return fallback;
+                float pad = Math.Max(4, (rx - lx) * 0.04f);
+                RectangleF r = new RectangleF(lx - pad, top + y0 - pad, rx - lx + pad * 2, bottom - top + pad * 2);
+                r = new RectangleF(r.X / scale, r.Y / scale, r.Width / scale, r.Height / scale);
+                r.Intersect(new RectangleF(0, 0, w0, h0));
+                return r;
+            }
+            catch { return fallback; }
         }
 
         // ---------------- 内容是什么、能做什么
@@ -14534,12 +14592,14 @@ namespace Glean
         }
 
         // 图片按"等比缩放、居中"显示时实际所在的位置
+        // 有识别结果时,图片缩到结果卡片上面,不让卡片挡住图
         RectangleF ImageRect()
         {
             if (Image == null) return RectangleF.Empty;
-            float s = Math.Min(Width / (float)Image.Width, Height / (float)Image.Height);
+            int avail = Found != null ? Height - CodeCard.H - Gfx.S(18) : Height;
+            float s = Math.Min(Width / (float)Image.Width, avail / (float)Image.Height);
             float w = Image.Width * s, h = Image.Height * s;
-            return new RectangleF((Width - w) / 2, (Height - h) / 2, w, h);
+            return new RectangleF((Width - w) / 2, (avail - h) / 2, w, h);
         }
 
         Rectangle BoxOnScreen(Codes.Code c)
@@ -14552,14 +14612,20 @@ namespace Glean
         Rectangle CardRect()
         {
             int w = Math.Min(Width - Gfx.S(24), Gfx.S(560));
-            return new Rectangle((Width - w) / 2, Height - CodeCard.H - Gfx.S(12), w, CodeCard.H);
+            return new Rectangle((Width - w) / 2, Height - CodeCard.H - Gfx.S(4), w, CodeCard.H);
         }
 
         protected override void OnPaint(PaintEventArgs pe)
         {
-            base.OnPaint(pe);
             Graphics g = pe.Graphics;
             Theme t = Theme.Cur;
+            g.Clear(BackColor);
+            if (Image != null)
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.DrawImage(Image, ImageRect());
+            }
             g.SmoothingMode = SmoothingMode.AntiAlias;
             if (Found != null && Image != null)
             {
@@ -14715,7 +14781,7 @@ namespace Glean
                 r.Intersect(new Rectangle(0, 0, all.Width, all.Height));
                 if (r.Width <= 0 || r.Height <= 0) continue;
                 using (Bitmap part = all.Clone(r, PixelFormat.Format24bppRgb))
-                    foreach (Codes.Code c in Codes.Scan(part, false))
+                    foreach (Codes.Code c in Codes.Scan(part, false, true))
                     {
                         c.Box = new RectangleF(c.Box.X + r.X, c.Box.Y + r.Y, c.Box.Width, c.Box.Height);
                         list.Add(c);
@@ -14772,8 +14838,14 @@ namespace Glean
                     g.Restore(st);
                 }
                 bool on = i == sel, hot = i == hover;
-                Gfx.DrawGlow(g, b, t.Accent, Gfx.S(on ? 16 : 10));
-                Gfx.DrawRound(g, on || hot ? t.Accent : Color.FromArgb(220, t.Accent), b, 10, Gfx.F(on ? 3f : 2f));
+                // 框外一圈柔和的光晕(只在框外面,不盖住码)
+                int glow = Gfx.S(on ? 9 : 6);
+                for (int k = glow; k >= 1; k--)
+                {
+                    Rectangle gr = b; gr.Inflate(k, k);
+                    Gfx.DrawRound(g, Color.FromArgb((int)((on ? 70 : 45) * (1 - k / (float)(glow + 1))), t.Accent), gr, 10 + k, 1.2f);
+                }
+                Gfx.DrawRound(g, on || hot ? t.Accent : Color.FromArgb(225, t.Accent), b, 10, Gfx.F(on ? 3f : 2f));
                 if (found.Count > 1)
                 {
                     Rectangle chip = new Rectangle(b.X - Gfx.S(8), b.Y - Gfx.S(8), Gfx.S(22), Gfx.S(22));

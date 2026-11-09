@@ -127,7 +127,9 @@ static class TexTest
         {
             using (Graphics g = Graphics.FromImage(big)) { g.Clear(Color.FromArgb(30, 30, 34)); g.DrawImage(shotImg, 1200, 700, 1600, 900); }
             sw.Restart(); List<Glean.Codes.Code> r2 = Glean.Codes.Scan(big, false);
-            Out("scan 3840x2160: " + sw.ElapsedMilliseconds + " ms, found " + r2.Count);
+            Out("scan 3840x2160 fast: " + sw.ElapsedMilliseconds + " ms, found " + r2.Count);
+            sw.Restart(); r2 = Glean.Codes.Scan(big, false, true);
+            Out("scan 3840x2160 thorough: " + sw.ElapsedMilliseconds + " ms, found " + r2.Count);
         }
         using (Bitmap empty = new Bitmap(1920, 1080))
         {
@@ -170,7 +172,7 @@ static class TexTest
         // 屏幕扫码:把截图全屏显示当作"屏幕内容"
         Form fake = new Form();
         fake.FormBorderStyle = FormBorderStyle.None; fake.StartPosition = FormStartPosition.Manual;
-        fake.Bounds = Screen.PrimaryScreen.Bounds; fake.BackgroundImage = shotImg; fake.BackgroundImageLayout = ImageLayout.Center; fake.BackColor = Color.FromArgb(244, 242, 238);
+        fake.Bounds = Screen.PrimaryScreen.Bounds; fake.BackgroundImage = shotImg; fake.BackgroundImageLayout = ImageLayout.Zoom; fake.BackColor = Color.FromArgb(244, 242, 238);
         fake.Show(); Pump(600);
         sw.Restart();
         Glean.ScanOverlay.Start(); Pump(150);

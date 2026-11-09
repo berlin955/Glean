@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.32.0.0")]
-[assembly: AssemblyFileVersion("0.32.0.0")]
+[assembly: AssemblyVersion("0.33.0.0")]
+[assembly: AssemblyFileVersion("0.33.0.0")]
 
 namespace Glean
 {
@@ -75,7 +75,12 @@ namespace Glean
         public static int RemindHour = 9;          // 提醒的钟点
         public static string Chime = "水晶";       // 提醒的提示音:内置的名字 / "自定义" / "无声"
         public static string ChimeFile = "";       // 自定义提示音文件
-        public const string Version = "0.32";
+        public static bool ScanCodes = true;       // 自动识别图片里的二维码 / 条形码
+        public static bool ScanCtrl = true, ScanAlt = true, ScanShift = false;   // 屏幕扫码的快捷键,默认 Ctrl + Alt + Q
+        public static Keys ScanKey = Keys.Q;
+        public static string ScanHotkeyText { get { return Describe(ScanCtrl, ScanAlt, ScanShift, false, ScanKey); } }
+        public static uint ScanModifiers { get { return (ScanAlt ? 1u : 0) | (ScanCtrl ? 2u : 0) | (ScanShift ? 4u : 0); } }
+        public const string Version = "0.33";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -193,6 +198,17 @@ namespace Glean
                             case "remindhour": RemindHour = Math.Max(0, Math.Min(23, int.Parse(v))); break;
                             case "chime": Chime = v; break;
                             case "chimefile": ChimeFile = v; break;
+                            case "scancodes": ScanCodes = v == "1"; break;
+                            case "scankey":
+                                {
+                                    string[] sp = v.Split('|');
+                                    if (sp.Length == 2 && sp[0].Length == 3)
+                                    {
+                                        ScanCtrl = sp[0][0] == '1'; ScanAlt = sp[0][1] == '1'; ScanShift = sp[0][2] == '1';
+                                        ScanKey = ParseKey(sp[1]);
+                                    }
+                                    break;
+                                }
                         }
                     }
                     catch { }
@@ -241,7 +257,9 @@ namespace Glean
                     "leaddays=" + LeadDays,
                     "remindhour=" + RemindHour,
                     "chime=" + Chime,
-                    "chimefile=" + ChimeFile
+                    "chimefile=" + ChimeFile,
+                    "scancodes=" + (ScanCodes ? "1" : "0"),
+                    "scankey=" + (ScanCtrl ? "1" : "0") + (ScanAlt ? "1" : "0") + (ScanShift ? "1" : "0") + "|" + KeyName(ScanKey)
                 };
                 File.WriteAllLines(SettingsFile, lines, new UTF8Encoding(false));
             }
@@ -1149,6 +1167,7 @@ namespace Glean
         public bool CourierChecked;
         public DueDate.Hit DueHit;          // 文字里识别出的到期日(时光轴开着时才算)
         public DateTime DueDay;             // 哪天算的(过了一天要重新算"是不是将来")
+        public string CodeKey;              // 二维码识别结果的缓存键(图片路径 + 大小 + 修改时间)
         public string FilePath, Hash, Text;
         public string AppPath, AppName;       // 来源程序
         public int CustomColor;               // 自定义的卡片标题颜色(0 = 默认)
@@ -2507,6 +2526,7 @@ namespace Glean
         public string Glyph = "";
         public bool MoreDots;     // 画成三个点
         public bool Clock;        // 画成小时钟(时光轴入口)
+        public bool Scan;         // 画成扫码框(屏幕扫码入口)
         public Color Badge = Color.Empty;   // 右上角的小圆点(有快到期的提醒时)
         bool hover;
 
@@ -2531,6 +2551,24 @@ namespace Glean
                 int x0 = (Width - d * 3 - gap * 2) / 2, y0 = (Height - d) / 2;
                 using (SolidBrush b = new SolidBrush(hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45)))
                     for (int k = 0; k < 3; k++) g.FillEllipse(b, x0 + k * (d + gap), y0, d, d);
+                return;
+            }
+            if (Scan)
+            {
+                // 四个角的取景框 + 中间一条扫描线
+                Color c = hover ? t.Text : Theme.Blend(t.Sub, t.Text, 0.45);
+                float sz = Gfx.F(15f), k = sz * 0.3f;
+                RectangleF r = new RectangleF((Width - sz) / 2f, (Height - sz) / 2f, sz, sz);
+                using (Pen p = new Pen(c, Gfx.F(1.5f)))
+                {
+                    p.StartCap = p.EndCap = LineCap.Round;
+                    p.LineJoin = LineJoin.Round;
+                    g.DrawLines(p, new PointF[] { new PointF(r.X, r.Y + k), new PointF(r.X, r.Y), new PointF(r.X + k, r.Y) });
+                    g.DrawLines(p, new PointF[] { new PointF(r.Right - k, r.Y), new PointF(r.Right, r.Y), new PointF(r.Right, r.Y + k) });
+                    g.DrawLines(p, new PointF[] { new PointF(r.Right, r.Bottom - k), new PointF(r.Right, r.Bottom), new PointF(r.Right - k, r.Bottom) });
+                    g.DrawLines(p, new PointF[] { new PointF(r.X + k, r.Bottom), new PointF(r.X, r.Bottom), new PointF(r.X, r.Bottom - k) });
+                    g.DrawLine(p, r.X + sz * 0.22f, r.Y + sz / 2f, r.Right - sz * 0.22f, r.Y + sz / 2f);
+                }
                 return;
             }
             if (Clock)
@@ -2824,6 +2862,7 @@ namespace Glean
             ImeMode = ImeMode.Disable;   // 列表区关闭输入法,空格、方向键直接可用
             EmptyText = "没有记录";
             Item.ThumbReady += OnThumbReady;
+            Codes.Ready += OnThumbReady;   // 二维码识别完了,卡片上要补一个角标
         }
 
         // 后台线程通知:缩略图好了,切回界面线程重绘
@@ -3896,6 +3935,8 @@ namespace Glean
         readonly Slider transSlider = new Slider();
         readonly Slider floatSlider = new Slider();
         readonly HotkeyBox hotkey = new HotkeyBox();
+        readonly HotkeyBox scanKey = new HotkeyBox();
+        readonly Toggle tCodes = new Toggle();
         readonly Toggle tPaste = new Toggle();
         readonly Toggle tImages = new Toggle();
         readonly Toggle tAuto = new Toggle();
@@ -4161,6 +4202,7 @@ namespace Glean
             SettingsGroup g = new SettingsGroup();
             g.AddRow("选中后自动粘贴", "直接粘贴到呼出面板之前所在的窗口", Switch(tPaste, Config.AutoPaste), Gfx.S(52));
             g.AddRow("记录图片", "截图等图片内容也保存到历史里", Switch(tImages, Config.RecordImages), Gfx.S(52));
+            g.AddRow("识别图片里的二维码", "自动找出图片里的二维码和条形码,卡片上会标出来", Switch(tCodes, Config.ScanCodes), Gfx.S(52));
             g.AddRow("开机自动启动", null, Switch(tAuto, Startup.Get()), Gfx.S(52));
             y = AddGroup(p, y, null, g, null);
 
@@ -4216,6 +4258,10 @@ namespace Glean
             hotkey.Win = Config.Win; hotkey.Key = Config.Key;
             hotkey.Height = Gfx.S(32);
             g1.AddRow("呼出面板", "点一下右边的框,再按下新的组合键", hotkey, Gfx.S(210));
+            scanKey.Ctrl = Config.ScanCtrl; scanKey.Alt = Config.ScanAlt; scanKey.Shift = Config.ScanShift;
+            scanKey.Win = false; scanKey.Key = Config.ScanKey;
+            scanKey.Height = Gfx.S(32);
+            g1.AddRow("屏幕扫码", "找出屏幕上所有的二维码和条形码", scanKey, Gfx.S(210));
             g1.AddRow("使用 Win + V", "替代系统自带的剪切板历史", Switch(tWinV, Config.WinV), Gfx.S(52));
             y = AddGroup(p, y, "全局快捷键", g1, "管理员身份运行的窗口里 Win + V 可能仍弹出系统面板,可改用上面的快捷键。");
 
@@ -4440,6 +4486,8 @@ namespace Glean
             Config.ShelfTransparency = transSlider.Value;
             Config.HeaderColor = headerColor.Value.ToArgb();
             Config.HoverFloat = floatSlider.Value;
+            Config.ScanCtrl = scanKey.Ctrl; Config.ScanAlt = scanKey.Alt; Config.ScanShift = scanKey.Shift; Config.ScanKey = scanKey.Key;
+            Config.ScanCodes = tCodes.Checked;
             Config.Ctrl = hotkey.Ctrl; Config.Alt = hotkey.Alt; Config.Shift = hotkey.Shift;
             Config.Win = hotkey.Win; Config.Key = hotkey.Key;
             Config.AutoPaste = tPaste.Checked;
@@ -4777,6 +4825,7 @@ namespace Glean
             anim.Interval = 15;
             anim.Tick += delegate { Animate(); };
             Item.ThumbReady += OnThumbReady;
+            Codes.Ready += OnThumbReady;   // 二维码识别完了,卡片上要补一个角标
         }
 
         void OnThumbReady()
@@ -5382,7 +5431,7 @@ namespace Glean
                    CardLook.Title(it) + "|" + it.TimeAgo() + "|" + it.SizeText() + "|" + it.Pinned + "|" +
                    (bd != null ? bd.Color.ToString() : "") + "|" + (i < 9) + "|" + (pv != null ? pv.GetHashCode() : 0) + "|" +
                    it.ThumbPending + "|" + (it.FileIcon != null) + "|" + (AppIcons.Get(it.AppPath) != null) + "|" +
-                   DueKey(it);
+                   DueKey(it) + "|" + Codes.BadgeKey(it);
         }
 
         static string DueKey(Item it)
@@ -5447,6 +5496,8 @@ namespace Glean
                 g.FillRectangle(lb, hr);
 
             Courier.Company courier = Courier.For(it);
+            List<Codes.Code> codes = Codes.ForCard(it);
+            if (courier == null) courier = Codes.CourierOf(codes);   // 快递面单截图:条形码就是单号
             Bitmap appIcon = courier != null ? null : AppIcons.Get(it.AppPath);
             int iconSz = Math.Min(Gfx.S(30), hh - Gfx.S(14));
             int textRight = hr.Right - Gfx.S(16) - (appIcon != null || courier != null ? iconSz + Gfx.S(10) : 0);
@@ -5457,6 +5508,15 @@ namespace Glean
             {
                 dueR = new Rectangle(textRight - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz);
                 textRight = dueR.X - Gfx.S(10);
+            }
+            // 图片里有二维码 / 条形码:标一个小角标(快递面单已经用快递角标表示了,就不重复)
+            Rectangle codeR = Rectangle.Empty;
+            bool codeQr = false;
+            if (codes != null && codes.Count > 0 && Codes.CourierOf(codes) == null)
+            {
+                codeQr = codes.Any(c => c.IsQr);
+                codeR = new Rectangle(textRight - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz);
+                textRight = codeR.X - Gfx.S(10);
             }
             // 色带:标题 + 小字"多久之前 · 大小"
             string sizeTxt = it.SizeText();
@@ -5480,6 +5540,7 @@ namespace Glean
                 Gfx.SoftText(g, subt, Gfx.Small, new Rectangle(tx0, blockY + Gfx.S(22), tw0, Gfx.S(18)), subInk, false);
             }
             if (due != null) Timeline.DrawCalendar(g, dueR, due.Date.Day, Timeline.Urgency(due.Date));
+            if (!codeR.IsEmpty) Codes.DrawBadge(g, codeR, codeQr);
             if (courier != null)
                 Courier.DrawBadge(g, courier, new Rectangle(hr.Right - Gfx.S(16) - iconSz, hr.Y + (hh - iconSz) / 2, iconSz, iconSz));
             else if (appIcon != null)
@@ -5828,7 +5889,8 @@ namespace Glean
     class QuickLook : Form
     {
         readonly TextBox text = new TextBox();
-        readonly PictureBox pic = new PictureBox();
+        readonly CodePic pic = new CodePic();
+        int codeToken;
         string title = "", meta = "";
         Color band = Color.Gray;
         string hint = "";
@@ -5888,6 +5950,12 @@ namespace Glean
 
         public void ShowFor(Item it, Rectangle shelf, bool beside)
         {
+            ShowFor(it, shelf, beside, false);
+        }
+
+        // force = 右键"识别二维码":不管自动识别开没开都识别,没找到也说一声
+        public void ShowFor(Item it, Rectangle shelf, bool beside, bool force)
+        {
             Theme t = Theme.Cur;
             BackColor = t.Card;
             hint = "空格 关闭预览   ·   Enter 粘贴   ·   ← → 切换";
@@ -5929,6 +5997,33 @@ namespace Glean
                 pic.BackColor = t.Card;
                 pic.Bounds = content;
                 try { pic.Image = Util.LoadBitmap(it.IsImage ? it.FilePath : it.Paths[0]); } catch { }
+                // 图片里的二维码 / 条形码:识别过的直接圈出来;没识别过的放到后台去识别
+                pic.SetCodes(null);
+                pic.Message = null;
+                int token = ++codeToken;
+                List<Codes.Code> known = Codes.Cached(it);
+                if (known != null)
+                {
+                    pic.SetCodes(known);
+                    if (force && known.Count == 0) pic.Say("没有在图片里找到二维码或条形码");
+                }
+                else if (Config.ScanCodes || force)
+                {
+                    if (force) pic.Say("正在识别…");
+                    Codes.ScanAsync(it, delegate(List<Codes.Code> list)
+                    {
+                        try
+                        {
+                            BeginInvoke(new MethodInvoker(delegate
+                            {
+                                if (token != codeToken || !pic.Visible) return;
+                                pic.SetCodes(list);
+                                if (force) { if (list.Count == 0) pic.Say("没有在图片里找到二维码或条形码"); else pic.Message = null; }
+                            }));
+                        }
+                        catch { }
+                    });
+                }
             }
             else
             {
@@ -6045,6 +6140,9 @@ namespace Glean
             Image old = pic.Image;
             pic.Image = null;
             if (old != null) old.Dispose();
+            codeToken++;
+            pic.SetCodes(null);
+            pic.Message = null;
             bool shownText = false;
             if (!isDir && TextExts.Contains(ext))
             {
@@ -7539,6 +7637,7 @@ namespace Glean
         readonly Chips tabs = new Chips();
         readonly IconButton gear = new IconButton();
         readonly IconButton timeBtn = new IconButton();   // 时光轴入口(设置按钮左边)
+        readonly IconButton scanBtn = new IconButton();   // 屏幕扫码(时光轴左边)
         readonly CardStrip cardView = new CardStrip();
         readonly ItemList listView = new ItemList();
         IClipView strip;     // 当前在用的视图:卡片或列表
@@ -7613,6 +7712,8 @@ namespace Glean
             gear.Click += delegate { HideNow(); owner.ShowSettingsFromPopup(); };
             timeBtn.Clock = true;
             timeBtn.Click += delegate { HideNow(); Timeline.Open(); };
+            scanBtn.Scan = true;
+            scanBtn.Click += delegate { HideNow(); owner.StartScan(); };
 
             Wire(cardView);
             Wire(listView);
@@ -7621,6 +7722,7 @@ namespace Glean
             Controls.Add(tabs);
             Controls.Add(gear);
             Controls.Add(timeBtn);
+            Controls.Add(scanBtn);
             Controls.Add(cardView);
             Controls.Add(listView);
             listView.Visible = false;
@@ -7779,6 +7881,8 @@ namespace Glean
                 int rightX = Width - pad - hh;
                 gear.SetBounds(rightX, hy, hh, hh);
                 if (timeShown) { rightX -= hh + Gfx.S(2); timeBtn.SetBounds(rightX, hy, hh, hh); }
+                rightX -= hh + Gfx.S(2);
+                scanBtn.SetBounds(rightX, hy, hh, hh);
                 int sm = Gfx.S(28);
                 if (pinBtn.Visible) { rightX -= sm + Gfx.S(2); pinBtn.SetBounds(rightX, hy + (hh - sm) / 2, sm, sm); }
                 if (minBtn.Visible) { rightX -= sm + Gfx.S(2); minBtn.SetBounds(rightX, hy + (hh - sm) / 2, sm, sm); }
@@ -7796,6 +7900,7 @@ namespace Glean
             sb.SetBounds(Gfx.S(162), hy2, Gfx.S(230), hh2);
             gear.SetBounds(Width - Gfx.S(20) - hh2, hy2, hh2, hh2);
             timeBtn.SetBounds(gear.Left - Gfx.S(2) - hh2, hy2, hh2, hh2);
+            scanBtn.SetBounds((timeShown ? timeBtn.Left : gear.Left) - Gfx.S(2) - hh2, hy2, hh2, hh2);
             int tx = sb.Right + Gfx.S(28);
             // 分类标签放不下时,先把右侧的快捷键提示让出来(显示删除提示条时除外)
             int edge = RightEdge;
@@ -7811,7 +7916,7 @@ namespace Glean
         }
 
         bool timeShown = true;   // 不用 timeBtn.Visible:面板隐藏时它总是 false
-        int RightEdge { get { return timeShown ? timeBtn.Left : gear.Left; } }
+        int RightEdge { get { return scanBtn.Left; } }
 
         // 时光轴入口:开着才显示;今天 / 已过期有没完成的,右上角点个红点,三天内的点琥珀色
         void UpdateTimeBtn()
@@ -8838,6 +8943,13 @@ namespace Glean
                 string imgPath = it.IsImage ? it.FilePath : it.Paths[0];
                 m.Items.Add("识别图片里的文字并粘贴", null, delegate { OcrImage(imgPath, true); });
             }
+            if (it.IsImage || it.IsImageFile)
+                m.Items.Add("识别二维码 / 条形码", null, delegate
+                {
+                    int idx = shown.IndexOf(it);
+                    if (idx >= 0) strip.Selected = idx;
+                    quick.ShowFor(it, Bounds, listMode, true);
+                });
 
             // 单张卡片的标题颜色
             ToolStripMenuItem colorMenu = new ToolStripMenuItem("标题颜色");
@@ -13781,9 +13893,1116 @@ namespace Glean
         }
     }
 
+    // ================================================================ 二维码 / 条形码识别(ZXing 开源库,打包在程序里,不联网)
+    static class Codes
+    {
+        public class Code
+        {
+            public string Text = "";
+            public string Format = "";     // "QR_CODE"、"EAN_13"…
+            public RectangleF Box;         // 在原图里的位置(像素)
+            public bool IsQr { get { return Format == "QR_CODE" || Format == "DATA_MATRIX" || Format == "AZTEC" || Format == "PDF_417"; } }
+        }
+
+        public enum Kind { Link, Wifi, Pay, Text, Barcode }
+
+        public class Act
+        {
+            public string Text;
+            public bool Primary, IsCopy;
+            public Action Run;
+            public Act(string t, bool p, bool copy, Action run) { Text = t; Primary = p; IsCopy = copy; Run = run; }
+        }
+
+        // 识别过的图片:路径 + 大小 + 修改时间 → 结果(空列表 = 识别过、没有码)
+        static readonly Dictionary<string, List<Code>> cache = new Dictionary<string, List<Code>>();
+        static readonly object gate = new object();
+        static bool loaded;
+        public static event Action Ready;   // 后台识别完一张(在后台线程上触发)
+
+        static string CacheFile { get { return System.IO.Path.Combine(Config.DefaultDir, "codes.txt"); } }
+
+        static void Load()
+        {
+            if (loaded) return;
+            lock (gate)
+            {
+                if (loaded) return;
+                loaded = true;
+                try
+                {
+                    if (!File.Exists(CacheFile)) return;
+                    foreach (string line in File.ReadAllLines(CacheFile, Encoding.UTF8))
+                    {
+                        string[] p = line.Split('\t');
+                        if (p.Length < 2) continue;
+                        List<Code> l;
+                        if (!cache.TryGetValue(p[0], out l)) { l = new List<Code>(); cache[p[0]] = l; }
+                        if (p[1] == "-" || p.Length < 4) continue;
+                        string[] b = p[2].Split(',');
+                        Code c = new Code();
+                        c.Format = p[1];
+                        c.Box = new RectangleF(float.Parse(b[0], CultureInfo.InvariantCulture), float.Parse(b[1], CultureInfo.InvariantCulture),
+                                               float.Parse(b[2], CultureInfo.InvariantCulture), float.Parse(b[3], CultureInfo.InvariantCulture));
+                        c.Text = Encoding.UTF8.GetString(Convert.FromBase64String(p[3]));
+                        l.Add(c);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        static void Remember(string key, List<Code> list)
+        {
+            lock (gate) cache[key] = list;
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                if (list.Count == 0) sb.Append(key).Append("\t-\r\n");
+                foreach (Code c in list)
+                    sb.Append(key).Append('\t').Append(c.Format).Append('\t')
+                      .Append(string.Format(CultureInfo.InvariantCulture, "{0:0.#},{1:0.#},{2:0.#},{3:0.#}", c.Box.X, c.Box.Y, c.Box.Width, c.Box.Height))
+                      .Append('\t').Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(c.Text))).Append("\r\n");
+                Directory.CreateDirectory(Config.DefaultDir);
+                File.AppendAllText(CacheFile, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        public static string PathOf(Item it)
+        {
+            if (it == null) return null;
+            if (it.IsImage) return it.FilePath;
+            if (it.IsImageFile && it.Paths != null && it.Paths.Length > 0) return it.Paths[0];
+            return null;
+        }
+
+        static string KeyOf(string path)
+        {
+            FileInfo f = new FileInfo(path);
+            return path.ToLowerInvariant() + "|" + f.Length + "|" + f.LastWriteTimeUtc.Ticks;
+        }
+
+        static string KeyOf(Item it)
+        {
+            if (it.CodeKey == null)
+            {
+                string p = PathOf(it);
+                if (p == null) return null;
+                try { it.CodeKey = KeyOf(p); } catch { return null; }
+            }
+            return it.CodeKey;
+        }
+
+        // 识别过的结果;还没识别过返回 null
+        public static List<Code> Cached(Item it)
+        {
+            Load();
+            string k = KeyOf(it);
+            if (k == null) return null;
+            lock (gate)
+            {
+                List<Code> l;
+                return cache.TryGetValue(k, out l) ? l : null;
+            }
+        }
+
+        // 卡片上用:有结果就返回;没识别过而且开着自动识别,就排队去后台识别
+        public static List<Code> ForCard(Item it)
+        {
+            if (it == null || (!it.IsImage && !it.IsImageFile)) return null;
+            List<Code> l = Cached(it);
+            if (l == null && Config.ScanCodes) ScanAsync(it, null);
+            return l;
+        }
+
+        public static string BadgeKey(Item it)
+        {
+            if (it == null || (!it.IsImage && !it.IsImageFile)) return "";
+            List<Code> l = Cached(it);
+            return l == null ? "?" : l.Count.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // ---------------- 后台识别队列(一次一张,不抢界面线程)
+        static readonly Queue<KeyValuePair<Item, Action<List<Code>>>> queue = new Queue<KeyValuePair<Item, Action<List<Code>>>>();
+        static readonly HashSet<string> queued = new HashSet<string>();
+        static Thread worker;
+
+        public static void ScanAsync(Item it, Action<List<Code>> done)
+        {
+            string k = KeyOf(it);
+            if (k == null) { if (done != null) done(new List<Code>()); return; }
+            lock (gate)
+            {
+                if (done == null && queued.Contains(k)) return;
+                queued.Add(k);
+                queue.Enqueue(new KeyValuePair<Item, Action<List<Code>>>(it, done));
+                if (worker == null || !worker.IsAlive)
+                {
+                    worker = new Thread(Work);
+                    worker.IsBackground = true;
+                    worker.Priority = ThreadPriority.BelowNormal;
+                    worker.Start();
+                }
+            }
+        }
+
+        static void Work()
+        {
+            while (true)
+            {
+                KeyValuePair<Item, Action<List<Code>>> job;
+                lock (gate)
+                {
+                    if (queue.Count == 0) { worker = null; return; }
+                    job = queue.Dequeue();
+                }
+                List<Code> result = Cached(job.Key);
+                if (result == null)
+                {
+                    result = new List<Code>();
+                    try
+                    {
+                        string p = PathOf(job.Key);
+                        if (p != null && new FileInfo(p).Length < 40L * 1024 * 1024)
+                            using (Bitmap b = Util.LoadBitmap(p)) result = Scan(b, false);
+                    }
+                    catch { }
+                    string k = KeyOf(job.Key);
+                    if (k != null) Remember(k, result);
+                    Action r = Ready;
+                    if (r != null) { try { r(); } catch { } }
+                }
+                if (job.Value != null) { try { job.Value(result); } catch { } }
+            }
+        }
+
+        // ---------------- 识别
+        static readonly ZXing.BarcodeFormat[] AllFormats = new ZXing.BarcodeFormat[]
+        {
+            ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.PDF_417, ZXing.BarcodeFormat.AZTEC,
+            ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E,
+            ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39, ZXing.BarcodeFormat.CODE_93, ZXing.BarcodeFormat.ITF,
+            ZXing.BarcodeFormat.CODABAR
+        };
+
+        // 大图先缩小再识别(快),没找到再用原图试一次;很小的图放大一点(细小的码更容易认出来)
+        public static List<Code> Scan(Bitmap src, bool qrOnly)
+        {
+            List<Code> found = new List<Code>();
+            int longSide = Math.Max(src.Width, src.Height);
+            float scale = 1f;
+            if (longSide > 2200) scale = 2200f / longSide;
+            else if (longSide < 480) scale = Math.Min(3f, 960f / Math.Max(1, longSide));
+            Try(src, scale, qrOnly, found);
+            if (found.Count == 0 && scale < 1f && longSide <= 6000) Try(src, 1f, qrOnly, found);
+            return found;
+        }
+
+        static void Try(Bitmap src, float scale, bool qrOnly, List<Code> found)
+        {
+            Bitmap b = src;
+            bool own = false;
+            try
+            {
+                if (Math.Abs(scale - 1f) > 0.01f)
+                {
+                    b = new Bitmap(Math.Max(1, (int)(src.Width * scale)), Math.Max(1, (int)(src.Height * scale)), PixelFormat.Format24bppRgb);
+                    own = true;
+                    using (Graphics g = Graphics.FromImage(b))
+                    {
+                        g.Clear(Color.White);
+                        g.InterpolationMode = scale > 1 ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBilinear;
+                        g.PixelOffsetMode = PixelOffsetMode.Half;
+                        g.DrawImage(src, new Rectangle(0, 0, b.Width, b.Height));
+                    }
+                }
+                else if (Image.IsAlphaPixelFormat(src.PixelFormat))
+                {
+                    // 透明底的截图(比如网页里的二维码 PNG):铺一层白底,不然透明处会被当成黑色
+                    b = new Bitmap(src.Width, src.Height, PixelFormat.Format24bppRgb);
+                    own = true;
+                    using (Graphics g = Graphics.FromImage(b)) { g.Clear(Color.White); g.DrawImage(src, 0, 0, src.Width, src.Height); }
+                }
+                ZXing.BarcodeReader r = new ZXing.BarcodeReader();
+                r.AutoRotate = true;
+                r.Options.TryHarder = true;
+                r.Options.PossibleFormats = qrOnly ? new List<ZXing.BarcodeFormat> { ZXing.BarcodeFormat.QR_CODE } : AllFormats.ToList();
+                ZXing.Result[] rs = r.DecodeMultiple(b);
+                if (rs == null) return;
+                foreach (ZXing.Result x in rs)
+                {
+                    if (x == null || string.IsNullOrEmpty(x.Text)) continue;
+                    string fmt = x.BarcodeFormat.ToString();
+                    if (found.Any(f => f.Text == x.Text && f.Format == fmt)) continue;
+                    Code c = new Code();
+                    c.Text = x.Text;
+                    c.Format = fmt;
+                    c.Box = BoxOf(x.ResultPoints, c.IsQr, scale, src.Width, src.Height);
+                    found.Add(c);
+                }
+            }
+            catch { }
+            finally { if (own) b.Dispose(); }
+        }
+
+        // 识别结果只给了几个定位点:二维码是三个"回"字的中心,条形码是一条横线的两端。由它们推出整个码的范围
+        static RectangleF BoxOf(ZXing.ResultPoint[] pts, bool qr, float scale, int w, int h)
+        {
+            if (pts == null || pts.Length == 0) return RectangleF.Empty;
+            float x0 = float.MaxValue, y0 = float.MaxValue, x1 = float.MinValue, y1 = float.MinValue;
+            foreach (ZXing.ResultPoint p in pts)
+            {
+                if (p == null) continue;
+                x0 = Math.Min(x0, p.X); y0 = Math.Min(y0, p.Y); x1 = Math.Max(x1, p.X); y1 = Math.Max(y1, p.Y);
+            }
+            float bw = x1 - x0, bh = y1 - y0;
+            RectangleF r;
+            if (qr && pts.Length >= 3)
+            {
+                float span = Math.Max(bw, bh);
+                float pad = span * 0.2f + 4;
+                r = new RectangleF(x0 - pad, y0 - pad, bw + pad * 2, bh + pad * 2);
+            }
+            else
+            {
+                float pad = Math.Max(6, bw * 0.06f);
+                float hh = Math.Max(24, bw * 0.32f);
+                float cy = (y0 + y1) / 2;
+                r = new RectangleF(x0 - pad, cy - hh / 2, bw + pad * 2, hh);
+            }
+            r = new RectangleF(r.X / scale, r.Y / scale, r.Width / scale, r.Height / scale);
+            r.Intersect(new RectangleF(0, 0, w, h));
+            return r;
+        }
+
+        // ---------------- 内容是什么、能做什么
+        static readonly Regex RePay = new Regex(@"^(wxp://|weixin://wxpay|alipays?://|https?://(qr\.alipay\.com|payapp\.weixin\.qq\.com|wx\.tenpay\.com|qr\.95516\.com|mobile\.qmf\.cn))", RegexOptions.IgnoreCase);
+
+        public static Kind KindOf(Code c)
+        {
+            string t = (c.Text ?? "").Trim();
+            if (!c.IsQr) return Kind.Barcode;
+            if (t.StartsWith("WIFI:", StringComparison.OrdinalIgnoreCase)) return Kind.Wifi;
+            if (RePay.IsMatch(t)) return Kind.Pay;
+            if (Regex.IsMatch(t, @"^https?://\S+$", RegexOptions.IgnoreCase)) return Kind.Link;
+            return Kind.Text;
+        }
+
+        public static string WifiField(string t, string key)
+        {
+            Match m = Regex.Match(t, @"(?:^WIFI:|;)" + key + @":((?:\\.|[^;\\])*)", RegexOptions.IgnoreCase);
+            return m.Success ? Regex.Replace(m.Groups[1].Value, @"\\(.)", "$1") : "";
+        }
+
+        public static Courier.Company CourierOf(List<Code> list)
+        {
+            if (list == null) return null;
+            foreach (Code c in list)
+                if (!c.IsQr)
+                {
+                    Courier.Company k = Courier.DetectCompany(c.Text);
+                    if (k != null) return k;
+                }
+            return null;
+        }
+
+        static string Pretty(string fmt)
+        {
+            switch (fmt)
+            {
+                case "QR_CODE": return "二维码";
+                case "DATA_MATRIX": return "Data Matrix";
+                case "PDF_417": return "PDF417";
+                case "AZTEC": return "Aztec";
+                case "EAN_13": return "EAN-13";
+                case "EAN_8": return "EAN-8";
+                case "UPC_A": return "UPC-A";
+                case "UPC_E": return "UPC-E";
+                case "CODE_128": return "Code 128";
+                case "CODE_39": return "Code 39";
+                case "CODE_93": return "Code 93";
+                default: return fmt;
+            }
+        }
+
+        // 卡片上的两行字
+        public static void Describe(Code c, out string title, out string sub)
+        {
+            string t = (c.Text ?? "").Trim();
+            switch (KindOf(c))
+            {
+                case Kind.Link:
+                    {
+                        Uri u;
+                        title = Uri.TryCreate(t, UriKind.Absolute, out u) ? u.Host : t;
+                        sub = t;
+                        break;
+                    }
+                case Kind.Wifi:
+                    {
+                        string pass = WifiField(t, "P");
+                        title = "WiFi  " + WifiField(t, "S");
+                        sub = pass.Length > 0 ? "密码  " + pass : "没有密码";
+                        break;
+                    }
+                case Kind.Pay:
+                    title = "付款 / 收款码";
+                    sub = "请用手机扫码完成支付,这里只能复制链接";
+                    break;
+                case Kind.Barcode:
+                    {
+                        Courier.Company k = Courier.DetectCompany(t);
+                        title = t;
+                        sub = (k != null ? k.Name + " 单号  ·  " : "条形码  ·  ") + Pretty(c.Format);
+                        break;
+                    }
+                default:
+                    {
+                        string one = Regex.Replace(t, @"\s+", " ");
+                        title = one.Length > 60 ? one.Substring(0, 60) + "…" : one;
+                        sub = "文字  ·  " + Pretty(c.Format) + "  ·  " + t.Length + " 个字";
+                        break;
+                    }
+            }
+        }
+
+        public static List<Act> Actions(Code c)
+        {
+            string t = (c.Text ?? "").Trim();
+            List<Act> l = new List<Act>();
+            switch (KindOf(c))
+            {
+                case Kind.Link:
+                    l.Add(new Act("复制", false, true, delegate { Copy(t); }));
+                    l.Add(new Act("打开", true, false, delegate { try { Process.Start(t); } catch { } }));
+                    break;
+                case Kind.Wifi:
+                    {
+                        string name = WifiField(t, "S"), pass = WifiField(t, "P");
+                        l.Add(new Act("复制名称", false, true, delegate { Copy(name); }));
+                        if (pass.Length > 0) l.Add(new Act("复制密码", true, true, delegate { Copy(pass); }));
+                        break;
+                    }
+                case Kind.Barcode:
+                    {
+                        Courier.Company k = Courier.DetectCompany(t);
+                        if (k != null)
+                        {
+                            l.Add(new Act("复制", false, true, delegate { Copy(t); }));
+                            l.Add(new Act("查物流", true, false, delegate { try { Process.Start(Courier.TrackUrl(t, k)); } catch { } }));
+                        }
+                        else l.Add(new Act("复制", true, true, delegate { Copy(t); }));
+                        break;
+                    }
+                default:
+                    l.Add(new Act("复制", true, true, delegate { Copy(t); }));
+                    break;
+            }
+            return l;
+        }
+
+        static void Copy(string s)
+        {
+            try { Clipboard.SetText(s); } catch { }
+        }
+
+        // ---------------- 图标
+        // 卡片角标:白色圆角小方块,里面画一个小二维码(或条形码),和其他角标同样大小
+        public static void DrawBadge(Graphics g, Rectangle r, bool qr)
+        {
+            SmoothingMode sm = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float rad = r.Width * 0.24f;
+            using (GraphicsPath sh = Timeline.RR(new RectangleF(r.X, r.Y + Math.Max(1f, r.Height * 0.04f), r.Width, r.Height), rad))
+            using (SolidBrush sb = new SolidBrush(Color.FromArgb(46, 0, 0, 0)))
+                g.FillPath(sb, sh);
+            using (GraphicsPath tile = Timeline.RR(new RectangleF(r.X, r.Y, r.Width, r.Height), rad))
+            {
+                g.FillPath(Brushes.White, tile);
+                using (Pen hl = new Pen(Color.FromArgb(30, 0, 0, 0), 1f)) g.DrawPath(hl, tile);
+            }
+            RectangleF inner = new RectangleF(r.X + r.Width * 0.22f, r.Y + r.Height * 0.22f, r.Width * 0.56f, r.Height * 0.56f);
+            if (qr) QrGlyph(g, inner, Color.FromArgb(40, 36, 32));
+            else BarsGlyph(g, inner, Color.FromArgb(40, 36, 32));
+            g.SmoothingMode = sm;
+        }
+
+        // 小二维码:三个"回"字 + 几个点
+        public static void QrGlyph(Graphics g, RectangleF r, Color c)
+        {
+            float u = r.Width / 7f;
+            using (SolidBrush b = new SolidBrush(c))
+            using (Pen p = new Pen(c, u * 0.75f))
+            {
+                PointF[] corners = { new PointF(r.X, r.Y), new PointF(r.Right - u * 3, r.Y), new PointF(r.X, r.Bottom - u * 3) };
+                foreach (PointF o in corners)
+                {
+                    g.DrawRectangle(p, o.X + u * 0.375f, o.Y + u * 0.375f, u * 2.25f, u * 2.25f);
+                    g.FillRectangle(b, o.X + u, o.Y + u, u, u);
+                }
+                g.FillRectangle(b, r.Right - u * 3, r.Bottom - u * 3, u, u);
+                g.FillRectangle(b, r.Right - u, r.Bottom - u * 3, u, u);
+                g.FillRectangle(b, r.Right - u * 2, r.Bottom - u * 2, u, u);
+                g.FillRectangle(b, r.Right - u * 3, r.Bottom - u, u, u);
+                g.FillRectangle(b, r.Right - u, r.Bottom - u, u, u);
+            }
+        }
+
+        public static void BarsGlyph(Graphics g, RectangleF r, Color c)
+        {
+            float[] w = { 1, 0.5f, 1.5f, 0.5f, 1, 2, 0.5f, 1, 0.5f, 1.5f };
+            float total = 0;
+            foreach (float x in w) total += x + 0.6f;
+            float unit = r.Width / total, xx = r.X;
+            using (SolidBrush b = new SolidBrush(c))
+                for (int i = 0; i < w.Length; i++)
+                {
+                    g.FillRectangle(b, xx, r.Y + r.Height * 0.05f, w[i] * unit, r.Height * 0.9f);
+                    xx += (w[i] + 0.6f) * unit;
+                }
+        }
+
+        static Font glyphFont;
+        static Font GlyphFont
+        {
+            get
+            {
+                if (glyphFont == null)
+                {
+                    Font f = new Font("Segoe MDL2 Assets", 12f);
+                    glyphFont = f.Name == "Segoe MDL2 Assets" ? f : new Font("Microsoft YaHei UI", 10f, FontStyle.Bold);
+                }
+                return glyphFont;
+            }
+        }
+
+        // 结果卡片左边的圆形类型图标
+        public static void DrawKindIcon(Graphics g, Rectangle r, Kind k, Color circle)
+        {
+            SmoothingMode sm = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush b = new SolidBrush(circle)) g.FillEllipse(b, r);
+            RectangleF inner = new RectangleF(r.X + r.Width * 0.28f, r.Y + r.Height * 0.28f, r.Width * 0.44f, r.Height * 0.44f);
+            if (k == Kind.Barcode) BarsGlyph(g, inner, Color.White);
+            else if (k == Kind.Text) QrGlyph(g, inner, Color.White);
+            else
+            {
+                string glyph = k == Kind.Link ? "" : k == Kind.Wifi ? "" : "";
+                if (GlyphFont.Name != "Segoe MDL2 Assets") glyph = k == Kind.Link ? "链" : k == Kind.Wifi ? "W" : "付";
+                TextRenderer.DrawText(g, glyph, GlyphFont, r, Color.White, circle,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+            }
+            g.SmoothingMode = sm;
+        }
+
+        public static Color KindColor(Kind k)
+        {
+            switch (k)
+            {
+                case Kind.Link: return Color.FromArgb(10, 132, 255);
+                case Kind.Wifi: return Color.FromArgb(48, 176, 199);
+                case Kind.Pay: return Color.FromArgb(52, 168, 98);
+                case Kind.Barcode: return Color.FromArgb(94, 92, 230);
+                default: return Color.FromArgb(142, 142, 147);
+            }
+        }
+    }
+
+    // 识别结果的一张小卡片:左边类型图标,中间两行字,右边按钮。预览窗口和屏幕扫码共用
+    class CodeCard
+    {
+        public Codes.Code Code;
+        public int Hover = -1;
+        public readonly List<KeyValuePair<Rectangle, Codes.Act>> Buttons = new List<KeyValuePair<Rectangle, Codes.Act>>();
+        string flash;
+        double flashAt;
+        public static int H { get { return Gfx.S(70); } }
+
+        public bool Flashing { get { return flash != null && Gfx.Ms - flashAt < 1300; } }
+
+        public void Paint(Graphics g, Rectangle r)
+        {
+            Theme t = Theme.Cur;
+            Buttons.Clear();
+            if (Code == null) return;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            // 投影 + 卡片
+            for (int k = Gfx.S(10); k >= 1; k -= Math.Max(1, Gfx.S(2)))
+                Gfx.FillRound(g, Color.FromArgb(t.Dark ? 14 : 8, 0, 0, 0), new Rectangle(r.X - k / 2, r.Y - k / 3 + Gfx.S(3), r.Width + k, r.Height + k), 14 + k / 2);
+            Color back = t.Dark ? Color.FromArgb(44, 41, 39) : Color.FromArgb(253, 252, 250);
+            Gfx.FillRound(g, back, r, 14);
+            Gfx.DrawRound(g, t.Dark ? Color.FromArgb(26, 255, 255, 255) : Color.FromArgb(22, 0, 0, 0), r, 14, 1f);
+
+            Codes.Kind kind = Codes.KindOf(Code);
+            int ic = Gfx.S(38);
+            Rectangle icon = new Rectangle(r.X + Gfx.S(14), r.Y + (r.Height - ic) / 2, ic, ic);
+            Codes.DrawKindIcon(g, icon, kind, Codes.KindColor(kind));
+
+            // 右边按钮(从右往左排)
+            List<Codes.Act> acts = Codes.Actions(Code);
+            int x = r.Right - Gfx.S(14);
+            int bh = Gfx.S(32);
+            for (int i = acts.Count - 1; i >= 0; i--)
+            {
+                Codes.Act a = acts[i];
+                string label = Flashing && flash == a.Text ? "已复制 ✓" : a.Text;
+                int bw = Math.Max(Gfx.S(64), TextRenderer.MeasureText(label, Gfx.UI, Size.Empty, TextFormatFlags.NoPadding).Width + Gfx.S(28));
+                Rectangle br = new Rectangle(x - bw, r.Y + (r.Height - bh) / 2, bw, bh);
+                bool hot = Hover == Buttons.Count;
+                Buttons.Add(new KeyValuePair<Rectangle, Codes.Act>(br, a));
+                Color fill = a.Primary ? (hot ? Theme.Blend(t.Accent, Color.Black, 0.1) : t.Accent)
+                                       : (hot ? Theme.Blend(back, t.Text, 0.12) : Theme.Blend(back, t.Text, 0.07));
+                if (Flashing && flash == a.Text) fill = Color.FromArgb(52, 168, 98);
+                Gfx.FillRound(g, fill, br, 99);
+                TextRenderer.DrawText(g, label, Gfx.UI, br, a.Primary || (Flashing && flash == a.Text) ? Color.White : t.Text, fill,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+                x = br.X - Gfx.S(8);
+            }
+
+            string title, sub;
+            Codes.Describe(Code, out title, out sub);
+            int tx = icon.Right + Gfx.S(12), tw = x - Gfx.S(6) - tx;
+            TextFormatFlags f = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine |
+                                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding;
+            TextRenderer.DrawText(g, title, Gfx.Bold, new Rectangle(tx, r.Y + Gfx.S(13), tw, Gfx.S(24)), t.Text, back, f);
+            TextRenderer.DrawText(g, sub, Gfx.Small, new Rectangle(tx, r.Y + Gfx.S(38), tw, Gfx.S(20)), t.Sub, back,
+                kind == Codes.Kind.Link ? (f & ~TextFormatFlags.EndEllipsis) | TextFormatFlags.PathEllipsis : f);
+        }
+
+        // 点了某个按钮:执行,复制类的显示"已复制";返回 true 表示点到了按钮
+        public bool Click(Point p, out Codes.Act act)
+        {
+            act = null;
+            foreach (KeyValuePair<Rectangle, Codes.Act> b in Buttons)
+                if (b.Key.Contains(p))
+                {
+                    act = b.Value;
+                    if (b.Value.IsCopy) { flash = b.Value.Text; flashAt = Gfx.Ms; }
+                    if (b.Value.Run != null) b.Value.Run();
+                    return true;
+                }
+            return false;
+        }
+
+        public bool UpdateHover(Point p)
+        {
+            int h = -1;
+            for (int i = 0; i < Buttons.Count; i++) if (Buttons[i].Key.Contains(p)) h = i;
+            if (h == Hover) return false;
+            Hover = h;
+            return true;
+        }
+    }
+
+    // 预览窗口里的图片:识别出的码用圆角框圈出来,底部浮着结果卡片
+    class CodePic : PictureBox
+    {
+        public List<Codes.Code> Found;
+        public int Sel;
+        public string Message;          // "没有找到二维码"这类提示
+        double messageAt;
+        int hoverBox = -1;
+        readonly CodeCard card = new CodeCard();
+        readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer();
+
+        public CodePic()
+        {
+            tick.Interval = 400;
+            tick.Tick += delegate
+            {
+                if (Message != null && Gfx.Ms - messageAt > 2600) Message = null;
+                if (Message == null && !card.Flashing) tick.Stop();
+                Invalidate();
+            };
+        }
+
+        public void SetCodes(List<Codes.Code> list)
+        {
+            Found = list != null && list.Count > 0 ? list : null;
+            Sel = 0;
+            card.Hover = -1;
+            Invalidate();
+        }
+
+        public void Say(string msg)
+        {
+            Message = msg;
+            messageAt = Gfx.Ms;
+            tick.Start();
+            Invalidate();
+        }
+
+        // 图片按"等比缩放、居中"显示时实际所在的位置
+        RectangleF ImageRect()
+        {
+            if (Image == null) return RectangleF.Empty;
+            float s = Math.Min(Width / (float)Image.Width, Height / (float)Image.Height);
+            float w = Image.Width * s, h = Image.Height * s;
+            return new RectangleF((Width - w) / 2, (Height - h) / 2, w, h);
+        }
+
+        Rectangle BoxOnScreen(Codes.Code c)
+        {
+            RectangleF ir = ImageRect();
+            float s = ir.Width / Image.Width;
+            return Rectangle.Round(new RectangleF(ir.X + c.Box.X * s, ir.Y + c.Box.Y * s, c.Box.Width * s, c.Box.Height * s));
+        }
+
+        Rectangle CardRect()
+        {
+            int w = Math.Min(Width - Gfx.S(24), Gfx.S(560));
+            return new Rectangle((Width - w) / 2, Height - CodeCard.H - Gfx.S(12), w, CodeCard.H);
+        }
+
+        protected override void OnPaint(PaintEventArgs pe)
+        {
+            base.OnPaint(pe);
+            Graphics g = pe.Graphics;
+            Theme t = Theme.Cur;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (Found != null && Image != null)
+            {
+                for (int i = 0; i < Found.Count; i++)
+                {
+                    Rectangle b = BoxOnScreen(Found[i]);
+                    if (b.Width < 4 || b.Height < 4) continue;
+                    bool on = i == Sel, hot = i == hoverBox;
+                    Gfx.FillRound(g, Color.FromArgb(on ? 40 : hot ? 28 : 16, t.Accent), b, 8);
+                    Gfx.DrawRound(g, Color.FromArgb(on ? 255 : 170, t.Accent), b, 8, Gfx.F(on ? 2.5f : 1.5f));
+                    if (Found.Count > 1)
+                    {
+                        Rectangle chip = new Rectangle(b.X - Gfx.S(6), b.Y - Gfx.S(6), Gfx.S(20), Gfx.S(20));
+                        using (SolidBrush cb = new SolidBrush(on ? t.Accent : Color.FromArgb(200, 90, 90, 90))) g.FillEllipse(cb, chip);
+                        TextRenderer.DrawText(g, (i + 1).ToString(CultureInfo.InvariantCulture), Gfx.Small, chip, Color.White,
+                            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    }
+                }
+                card.Code = Found[Math.Max(0, Math.Min(Sel, Found.Count - 1))];
+                card.Paint(g, CardRect());
+            }
+            if (Message != null)
+            {
+                int w = TextRenderer.MeasureText(Message, Gfx.UI).Width + Gfx.S(32);
+                Rectangle m = new Rectangle((Width - w) / 2, Height - Gfx.S(52), w, Gfx.S(36));
+                Color back = Color.FromArgb(230, 40, 38, 36);
+                Gfx.FillRound(g, back, m, 99);
+                TextRenderer.DrawText(g, Message, Gfx.UI, m, Color.White, Color.FromArgb(40, 38, 36),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (Found == null) return;
+            bool changed = card.UpdateHover(e.Location);
+            int hb = -1;
+            if (!CardRect().Contains(e.Location))
+                for (int i = 0; i < Found.Count; i++) if (BoxOnScreen(Found[i]).Contains(e.Location)) hb = i;
+            if (hb != hoverBox) { hoverBox = hb; changed = true; }
+            Cursor = card.Hover >= 0 || hoverBox >= 0 ? Cursors.Hand : Cursors.Default;
+            if (changed) Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            card.Hover = -1;
+            hoverBox = -1;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (Found == null || e.Button != MouseButtons.Left) return;
+            Codes.Act a;
+            if (card.Click(e.Location, out a)) { tick.Start(); Invalidate(); return; }
+            if (hoverBox >= 0) { Sel = hoverBox; Invalidate(); }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) tick.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    // 屏幕扫码:把整个屏幕定格、压暗,自动找出上面所有的二维码 / 条形码并高亮;点一下看结果
+    class ScanOverlay : Form
+    {
+        static ScanOverlay current;
+        readonly Bitmap shot, dim;
+        readonly List<Codes.Code> found = new List<Codes.Code>();
+        readonly CodeCard card = new CodeCard();
+        int sel = -1, hover = -1;
+        bool scanning = true, dragging;
+        string message;
+        Point dragFrom;
+        Rectangle drag;
+        readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer();
+        double openAt;
+
+        public static void Start()
+        {
+            if (current != null && !current.IsDisposed) { current.Activate(); return; }
+            current = new ScanOverlay();
+            current.Show();
+            current.Activate();
+        }
+
+        ScanOverlay()
+        {
+            Rectangle vs = SystemInformation.VirtualScreen;
+            shot = new Bitmap(vs.Width, vs.Height, PixelFormat.Format32bppRgb);
+            using (Graphics g = Graphics.FromImage(shot)) g.CopyFromScreen(vs.Location, Point.Empty, vs.Size);
+            dim = new Bitmap(shot);
+            using (Graphics g = Graphics.FromImage(dim))
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(128, 10, 10, 12)))
+                g.FillRectangle(b, 0, 0, dim.Width, dim.Height);
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = vs;
+            ShowInTaskbar = false;
+            TopMost = true;
+            KeyPreview = true;
+            DoubleBuffered = true;
+            Cursor = Cursors.Cross;
+            BackColor = Color.Black;
+            tick.Interval = 30;
+            tick.Tick += delegate { Invalidate(); if (!scanning && !card.Flashing && Gfx.Ms - openAt > 400) tick.Stop(); };
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            openAt = Gfx.Ms;
+            tick.Start();
+            Bitmap copy = new Bitmap(shot);
+            Thread th = new Thread(delegate()
+            {
+                List<Codes.Code> r = new List<Codes.Code>();
+                try { r = ScanScreens(copy); } catch { }
+                copy.Dispose();
+                try
+                {
+                    BeginInvoke(new MethodInvoker(delegate
+                    {
+                        scanning = false;
+                        found.AddRange(r);
+                        if (found.Count == 1) sel = 0;   // 只有一个:直接把结果亮出来,省一次点击
+                        if (found.Count == 0) message = "屏幕上没有找到二维码";
+                        tick.Start();
+                        Invalidate();
+                    }));
+                }
+                catch { }
+            });
+            th.IsBackground = true;
+            th.Start();
+        }
+
+        // 按显示器分块识别(每块不会太大,识别更快也更准)
+        List<Codes.Code> ScanScreens(Bitmap all)
+        {
+            List<Codes.Code> list = new List<Codes.Code>();
+            Rectangle vs = Bounds;
+            foreach (Screen s in Screen.AllScreens)
+            {
+                Rectangle r = s.Bounds;
+                r.Offset(-vs.X, -vs.Y);
+                r.Intersect(new Rectangle(0, 0, all.Width, all.Height));
+                if (r.Width <= 0 || r.Height <= 0) continue;
+                using (Bitmap part = all.Clone(r, PixelFormat.Format24bppRgb))
+                    foreach (Codes.Code c in Codes.Scan(part, false))
+                    {
+                        c.Box = new RectangleF(c.Box.X + r.X, c.Box.Y + r.Y, c.Box.Width, c.Box.Height);
+                        list.Add(c);
+                    }
+            }
+            return list;
+        }
+
+        Rectangle BoxOf(Codes.Code c)
+        {
+            Rectangle b = Rectangle.Round(c.Box);
+            b.Inflate(Gfx.S(6), Gfx.S(6));
+            return b;
+        }
+
+        Rectangle CardRect()
+        {
+            if (sel < 0 || sel >= found.Count) return Rectangle.Empty;
+            Rectangle b = BoxOf(found[sel]);
+            Rectangle vs = Bounds;
+            Rectangle scr = Screen.FromRectangle(new Rectangle(b.X + vs.X, b.Y + vs.Y, b.Width, b.Height)).Bounds;
+            scr.Offset(-vs.X, -vs.Y);
+            int w = Math.Min(Gfx.S(540), scr.Width - Gfx.S(40));
+            int x = Math.Max(scr.X + Gfx.S(20), Math.Min(scr.Right - Gfx.S(20) - w, b.X + b.Width / 2 - w / 2));
+            int y = b.Bottom + Gfx.S(14);
+            if (y + CodeCard.H > scr.Bottom - Gfx.S(20)) y = b.Y - Gfx.S(14) - CodeCard.H;
+            if (y < scr.Y + Gfx.S(20)) y = scr.Y + Gfx.S(20);
+            return new Rectangle(x, y, w, CodeCard.H);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Theme t = Theme.Cur;
+            g.CompositingMode = CompositingMode.SourceCopy;
+            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+            // 刚打开时 0.15 秒里从原样过渡到压暗
+            double p = Math.Min(1, (Gfx.Ms - openAt) / 150.0);
+            g.DrawImage(p < 1 ? shot : dim, 0, 0, shot.Width, shot.Height);
+            g.CompositingMode = CompositingMode.SourceOver;
+            if (p < 1)
+                using (SolidBrush b = new SolidBrush(Color.FromArgb((int)(128 * p), 10, 10, 12))) g.FillRectangle(b, ClientRectangle);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // 找到的码:把那块"提亮"回原样,外面一圈主题色的圆角框
+            for (int i = 0; i < found.Count; i++)
+            {
+                Rectangle b = BoxOf(found[i]);
+                using (GraphicsPath path = Gfx.Round(b, 10))
+                {
+                    GraphicsState st = g.Save();
+                    g.SetClip(path);
+                    g.DrawImage(shot, b, b, GraphicsUnit.Pixel);
+                    g.Restore(st);
+                }
+                bool on = i == sel, hot = i == hover;
+                Gfx.DrawGlow(g, b, t.Accent, Gfx.S(on ? 16 : 10));
+                Gfx.DrawRound(g, on || hot ? t.Accent : Color.FromArgb(220, t.Accent), b, 10, Gfx.F(on ? 3f : 2f));
+                if (found.Count > 1)
+                {
+                    Rectangle chip = new Rectangle(b.X - Gfx.S(8), b.Y - Gfx.S(8), Gfx.S(22), Gfx.S(22));
+                    using (SolidBrush cb = new SolidBrush(t.Accent)) g.FillEllipse(cb, chip);
+                    TextRenderer.DrawText(g, (i + 1).ToString(CultureInfo.InvariantCulture), Gfx.Small, chip, Color.White,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                }
+            }
+
+            // 拖动框选的区域
+            if (dragging && drag.Width > 0 && drag.Height > 0)
+            {
+                g.DrawImage(shot, drag, drag, GraphicsUnit.Pixel);
+                using (Pen pen = new Pen(Color.White, Gfx.F(1.5f))) { pen.DashPattern = new float[] { 4, 3 }; g.DrawRectangle(pen, drag); }
+            }
+
+            if (sel >= 0 && sel < found.Count)
+            {
+                card.Code = found[sel];
+                card.Paint(g, CardRect());
+            }
+
+            // 顶部的提示胶囊
+            Rectangle prim = Screen.PrimaryScreen.Bounds;
+            prim.Offset(-Bounds.X, -Bounds.Y);
+            string tip;
+            if (scanning)
+            {
+                int dots = (int)((Gfx.Ms / 350) % 4);
+                tip = "正在查找屏幕上的二维码" + new string('.', dots) + new string(' ', 3 - dots);
+            }
+            else if (message != null) tip = message + "  ·  拖动鼠标框选一块区域再试  ·  Esc 退出";
+            else if (found.Count > 1) tip = "找到 " + found.Count + " 个码,点一下查看  ·  Esc 退出";
+            else tip = "Esc 退出  ·  也可以拖动鼠标框选一块区域";
+            int tw = TextRenderer.MeasureText(tip, Gfx.UI).Width + Gfx.S(40);
+            Rectangle pill = new Rectangle(prim.X + (prim.Width - tw) / 2, prim.Y + Gfx.S(28), tw, Gfx.S(40));
+            for (int k = Gfx.S(8); k >= 1; k -= Math.Max(1, Gfx.S(2)))
+                Gfx.FillRound(g, Color.FromArgb(18, 0, 0, 0), new Rectangle(pill.X - k / 2, pill.Y - k / 3 + Gfx.S(2), pill.Width + k, pill.Height + k), 99);
+            Color pb = Color.FromArgb(38, 36, 34);
+            Gfx.FillRound(g, pb, pill, 99);
+            Gfx.DrawRound(g, Color.FromArgb(40, 255, 255, 255), pill, 99, 1f);
+            TextRenderer.DrawText(g, tip, Gfx.UI, pill, Color.FromArgb(240, 240, 240), pb,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+
+        int HitBox(Point p)
+        {
+            for (int i = found.Count - 1; i >= 0; i--) if (BoxOf(found[i]).Contains(p)) return i;
+            return -1;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Right) { Close(); return; }
+            if (e.Button != MouseButtons.Left) return;
+            if (sel >= 0 && CardRect().Contains(e.Location))
+            {
+                Codes.Act a;
+                if (card.Click(e.Location, out a))
+                {
+                    tick.Start();
+                    Invalidate();
+                    // 打开链接、查物流:直接退出;复制:让"已复制"闪一下再退出
+                    System.Windows.Forms.Timer bye = new System.Windows.Forms.Timer();
+                    bye.Interval = a.IsCopy ? 650 : 60;
+                    bye.Tick += delegate { bye.Dispose(); Close(); };
+                    bye.Start();
+                }
+                return;
+            }
+            int h = HitBox(e.Location);
+            if (h >= 0) { sel = h; Invalidate(); return; }
+            dragFrom = e.Location;
+            dragging = true;
+            drag = Rectangle.Empty;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (dragging)
+            {
+                drag = Rectangle.FromLTRB(Math.Min(dragFrom.X, e.X), Math.Min(dragFrom.Y, e.Y), Math.Max(dragFrom.X, e.X), Math.Max(dragFrom.Y, e.Y));
+                Invalidate();
+                return;
+            }
+            bool changed = sel >= 0 && CardRect().Contains(e.Location) ? card.UpdateHover(e.Location) : card.UpdateHover(new Point(-9999, -9999));
+            int h = HitBox(e.Location);
+            if (h != hover) { hover = h; changed = true; }
+            Cursor = h >= 0 || card.Hover >= 0 ? Cursors.Hand : Cursors.Cross;
+            if (changed) Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (!dragging) return;
+            dragging = false;
+            Rectangle r = drag;
+            drag = Rectangle.Empty;
+            if (r.Width < Gfx.S(16) || r.Height < Gfx.S(16)) { sel = -1; Invalidate(); return; }
+            // 框选的区域:裁出来放大再识别(小的码也能认出来)
+            scanning = true;
+            message = null;
+            tick.Start();
+            Bitmap part = shot.Clone(r, PixelFormat.Format24bppRgb);
+            Thread th = new Thread(delegate()
+            {
+                List<Codes.Code> got = new List<Codes.Code>();
+                try
+                {
+                    float up = Math.Min(4f, Math.Max(1f, 1200f / Math.Max(part.Width, part.Height)));
+                    using (Bitmap big = new Bitmap((int)(part.Width * up), (int)(part.Height * up), PixelFormat.Format24bppRgb))
+                    {
+                        using (Graphics g = Graphics.FromImage(big))
+                        {
+                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.PixelOffsetMode = PixelOffsetMode.Half;
+                            g.DrawImage(part, new Rectangle(0, 0, big.Width, big.Height));
+                        }
+                        foreach (Codes.Code c in Codes.Scan(big, false))
+                        {
+                            c.Box = new RectangleF(r.X + c.Box.X / up, r.Y + c.Box.Y / up, c.Box.Width / up, c.Box.Height / up);
+                            got.Add(c);
+                        }
+                    }
+                }
+                catch { }
+                part.Dispose();
+                try
+                {
+                    BeginInvoke(new MethodInvoker(delegate
+                    {
+                        scanning = false;
+                        int before = found.Count;
+                        foreach (Codes.Code c in got)
+                            if (!found.Any(f => f.Text == c.Text && f.Format == c.Format)) found.Add(c);
+                        if (found.Count > before) { sel = before; message = null; }
+                        else message = "这块区域里也没有找到";
+                        tick.Start();
+                        Invalidate();
+                    }));
+                }
+                catch { }
+            });
+            th.IsBackground = true;
+            th.Start();
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Escape)
+            {
+                if (sel >= 0 && found.Count > 1) { sel = -1; Invalidate(); }
+                else Close();
+            }
+            else if (e.KeyCode == Keys.Tab && found.Count > 0)
+            {
+                sel = (sel + 1) % found.Count;
+                Invalidate();
+            }
+            else if (e.KeyCode == Keys.Enter && sel >= 0)
+            {
+                List<Codes.Act> acts = Codes.Actions(found[sel]);
+                Codes.Act a = acts.FirstOrDefault(x => x.Primary) ?? acts[0];
+                if (a.Run != null) a.Run();
+                Close();
+            }
+        }
+
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            // 切到别的窗口(比如打开了链接)就退出,不挡着屏幕
+            if (!IsDisposed) BeginInvoke(new MethodInvoker(delegate { if (!IsDisposed && Form.ActiveForm != this) Close(); }));
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            tick.Stop();
+            tick.Dispose();
+            shot.Dispose();
+            dim.Dispose();
+            if (current == this) current = null;
+            base.OnFormClosed(e);
+        }
+    }
+
+    // 二维码识别库打包在程序里面:第一次用到时从资源里加载,安装后还是一个 exe
+    static class Embedded
+    {
+        static Assembly zxing;
+        static bool hooked;
+
+        public static void Hook()
+        {
+            if (hooked) return;
+            hooked = true;
+            AppDomain.CurrentDomain.AssemblyResolve += delegate(object s, ResolveEventArgs e)
+            {
+                if (!e.Name.StartsWith("zxing", StringComparison.OrdinalIgnoreCase)) return null;
+                lock (typeof(Embedded))
+                {
+                    if (zxing != null) return zxing;
+                    try
+                    {
+                        using (Stream st = typeof(Embedded).Assembly.GetManifestResourceStream("zxing.dll"))
+                        {
+                            if (st == null) return null;
+                            byte[] b = new byte[st.Length];
+                            int n = 0;
+                            while (n < b.Length) { int r = st.Read(b, n, b.Length - n); if (r <= 0) break; n += r; }
+                            zxing = Assembly.Load(b);
+                        }
+                    }
+                    catch { }
+                    return zxing;
+                }
+            };
+        }
+    }
+
     class MainForm : Form
     {
         const int HotkeyId = 1;
+        const int ScanHotkeyId = 2;
+        ToolStripMenuItem scanItem;
 
         History hist;
         readonly ShelfForm shelf;
@@ -13912,6 +15131,9 @@ namespace Glean
             openItem.Click += delegate { TogglePopup(false); };
             m.Items.Add(openItem);
             m.Items.Add("打开文件夹", null, delegate { shelf.ShowFiles(); });
+            scanItem = new ToolStripMenuItem("屏幕扫码    " + Config.ScanHotkeyText);
+            scanItem.Click += delegate { StartScan(); };
+            m.Items.Add(scanItem);
             timelineItem = new ToolStripMenuItem("时光轴");
             timelineItem.Click += delegate { Timeline.Open(); };
             m.Items.Add(timelineItem);
@@ -14041,6 +15263,7 @@ namespace Glean
             base.OnHandleCreated(e);
             Native.AddClipboardFormatListener(Handle);
             hotkeyOk = RegisterHotkey();
+            RegisterScanHotkey();
             UpdateWinV();
             updateBalloon = false;
             if (hotkeyOk)
@@ -14055,6 +15278,7 @@ namespace Glean
         {
             WinVHook.Uninstall();
             Native.UnregisterHotKey(Handle, HotkeyId);
+            Native.UnregisterHotKey(Handle, ScanHotkeyId);
             Native.RemoveClipboardFormatListener(Handle);
             base.OnHandleDestroyed(e);
         }
@@ -14121,11 +15345,32 @@ namespace Glean
             return Native.RegisterHotKey(Handle, HotkeyId, Config.Modifiers | 0x4000, (uint)Config.Key);
         }
 
+        bool RegisterScanHotkey()
+        {
+            Native.UnregisterHotKey(Handle, ScanHotkeyId);
+            if (Config.ScanKey == Keys.None) return true;
+            return Native.RegisterHotKey(Handle, ScanHotkeyId, Config.ScanModifiers | 0x4000, (uint)Config.ScanKey);
+        }
+
+        // 屏幕扫码:先把面板、菜单收起来,等它们从屏幕上消失再截屏
+        public void StartScan()
+        {
+            if (shelf.Visible) shelf.HideNow();
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = 180;
+            t.Tick += delegate { t.Dispose(); try { ScanOverlay.Start(); } catch { } };
+            t.Start();
+        }
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == Native.WM_CLIPBOARDUPDATE)
             {
                 OnClipboardChanged();
+            }
+            else if (m.Msg == Native.WM_HOTKEY && m.WParam.ToInt32() == ScanHotkeyId)
+            {
+                StartScan();
             }
             else if (m.Msg == Native.WM_HOTKEY && m.WParam.ToInt32() == HotkeyId)
             {
@@ -14188,12 +15433,17 @@ namespace Glean
             hist.Purge(Config.KeepDays);
 
             hotkeyOk = RegisterHotkey();
+            bool scanOk = RegisterScanHotkey();
+            scanItem.Text = "屏幕扫码    " + Config.ScanHotkeyText;
             UpdateWinV();
             tray.Text = TrayTip();
             openItem.Text = "打开剪切板历史    " + Config.HotkeyText;
             if (!hotkeyOk)
                 tray.ShowBalloonTip(4000, Brand.Name,
                     "热键 " + Config.HotkeyText + " 被其他程序占用,请在设置里换一个", ToolTipIcon.Warning);
+            else if (!scanOk)
+                tray.ShowBalloonTip(4000, Brand.Name,
+                    "屏幕扫码的快捷键 " + Config.ScanHotkeyText + " 被其他程序占用,请在设置里换一个", ToolTipIcon.Warning);
         }
 
         // ------------------------------------------------ 监听剪切板
@@ -14293,6 +15543,8 @@ namespace Glean
                 string appPath, appName;
                 Util.ClipboardOwnerApp(out appPath, out appName);
                 hist.SetSource(added, appPath, appName);
+                // 新复制的图片:后台识别里面有没有二维码 / 条形码(有的话卡片上会出现角标)
+                if (Config.ScanCodes && (added.IsImage || added.IsImageFile)) Codes.ScanAsync(added, null);
                 // 时光轴:文字里有将来的到期日,问一句要不要提醒(放到剪切板处理完之后再弹)
                 if (Config.TimelineOn && !added.IsFiles && !added.IsImage && added.Text != null)
                 {
@@ -14383,6 +15635,7 @@ namespace Glean
         [STAThread]
         static void Main()
         {
+            Embedded.Hook();
             bool created;
             using (Mutex mutex = new Mutex(true, "Local\\Glean_Singleton", out created))
             {

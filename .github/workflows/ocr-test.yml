@@ -12,12 +12,12 @@ jobs:
         run: |
           Invoke-WebRequest https://www.nuget.org/api/v2/package/ZXing.Net/0.16.9 -OutFile zx.zip
           Expand-Archive zx.zip zx
-          Get-ChildItem zx/lib -Recurse -Filter zxing.dll | ForEach-Object { $_.FullName + "  " + $_.Length + "  " + (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
           Copy-Item zx/lib/net40/zxing.dll zxing.dll
       - name: build and run
         shell: cmd
         run: |
           set "CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          "%CSC%" /nologo /target:winexe /optimize /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:zxing.dll /out:tex.exe Glean.cs TexTest.cs /main:TexTest || exit /b 1
+          "%CSC%" /nologo /target:winexe /optimize /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:zxing.dll /resource:zxing.dll,zxing.dll /out:tex.exe Glean.cs TexTest.cs /main:TexTest || exit /b 1
+          move zxing.dll zxing.bak
           start /wait tex.exe
           type out.txt

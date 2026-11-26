@@ -15619,7 +15619,7 @@ namespace Glean
             this.opening = opening;
             this.done = done;
             // 打开:轻快、有一点点"弹"的落定;关闭:干脆地收回去
-            sp = opening ? new Spring(0.36, 0.82) : new Spring(0.26, 1.0);
+            sp = opening ? new Spring(0.36, 0.82) : new Spring(0.22, 0.92);
             sp.Rest = 0.002;
             sp.Value = opening ? 0 : 1;
             sp.Target = opening ? 1 : 0;
@@ -15656,6 +15656,17 @@ namespace Glean
         }
 
         public static List<string> Trace;   // 测试用:记录每一帧
+
+        // 测试用:停掉动画,把进度 p 时的画面拿出来看
+        public static Bitmap DebugFrame(double p)
+        {
+            if (current == null) return null;
+            Frames.Remove(current.stepFn);
+            current.sp.Value = p;
+            current.sp.Velocity = 0;
+            current.Render();
+            return current.frame == null ? null : new Bitmap(current.frame);
+        }
         static double traceT0;
 
         bool Step(double dt)
@@ -15667,7 +15678,7 @@ namespace Glean
             double p = sp.Value;
             // 打开:快到位时换成真窗口,快照立刻收掉(不让放大过的快照盖在清晰的真窗口上)
             // 关闭:缩到几乎看不见就结束,不留残影
-            bool end = !moving || (opening ? p > 0.985 && Math.Abs(sp.Velocity) < 0.6 : p < 0.03);
+            bool end = !moving || (opening ? p > 0.985 && Math.Abs(sp.Velocity) < 0.6 : p < 0.06);
             if (end)
             {
                 Action d = done;
@@ -15747,7 +15758,7 @@ namespace Glean
                     g.DrawPath(pen, edge);
             }
             // 关闭时最后一点淡出;打开时一开始很快变实
-            float alpha = opening ? Math.Min(1f, 0.35f + 0.65f * Smooth(0, 0.25, p)) : Smooth(0.03, 0.4, p);
+            float alpha = opening ? Math.Min(1f, 0.35f + 0.65f * Smooth(0, 0.25, p)) : Smooth(0.06, 0.4, p);
             Push((byte)(alpha * 255));
         }
 

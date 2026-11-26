@@ -135,6 +135,38 @@ static class TexTest
         Pump(500);
         Out("trace close: " + string.Join(" ", Glean.MorphWindow.Trace.ToArray()));
         Out("quick visible after close: " + ql.Visible + ", morph running " + Glean.MorphWindow.Running);
+        // 再打开一次,把动画的中间帧逐个画出来,贴在一张桌面截图上
+        Pump(300);
+        typeof(Glean.ShelfForm).GetMethod("ShowQuick", NP).Invoke(shelf, null);
+        Pump(20);
+        using (Bitmap desk = Grab(area))
+        {
+            double[] ps = { 0.05, 0.2, 0.4, 0.6, 0.8, 1.0 };
+            int tw = area.Width / 2, th = area.Height / 2;
+            using (Bitmap sheet = new Bitmap(tw * 3, th * 2))
+            {
+                using (Graphics g = Graphics.FromImage(sheet))
+                {
+                    Rectangle mb = Rectangle.Empty;
+                    foreach (Form f in Application.OpenForms) if (f is Glean.MorphWindow) mb = f.Bounds;
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        using (Bitmap fr = Glean.MorphWindow.DebugFrame(ps[i]))
+                        using (Bitmap comp = new Bitmap(desk))
+                        {
+                            if (fr != null)
+                                using (Graphics cg = Graphics.FromImage(comp))
+                                    cg.DrawImage(fr, mb.X - area.X, mb.Y - area.Y, fr.Width, fr.Height);
+                            g.DrawImage(comp, (i % 3) * tw, (i / 3) * th, tw, th);
+                            g.DrawString("p=" + ps[i], SystemFonts.DefaultFont, Brushes.Red, (i % 3) * tw + 4, (i / 3) * th + 4);
+                        }
+                    }
+                }
+                Save("frames", sheet);
+            }
+        }
+        Glean.MorphWindow.Cancel(); Pump(300);
+        ql.HideLook(); Pump(200);
         // 悬停浮起
         cv.GetType().GetField("hover", NP).SetValue(cv, 3);
         cv.GetType().GetMethod("Kick", NP).Invoke(cv, null);

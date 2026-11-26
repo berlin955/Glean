@@ -285,6 +285,7 @@ namespace Glean
         string EmptyText { get; set; }
         int Selected { get; set; }
         int Hovered { get; }   // 鼠标正停在哪一项上(键盘移动过选中后视为没有),-1 = 没有
+        Rectangle ScreenRectOf(int i);   // 这一项在屏幕上的位置(看不见返回空)
         bool Visible { get; set; }
         bool Focused { get; }
         void SetItems(List<Item> list, int mode);
@@ -2887,6 +2888,15 @@ namespace Glean
         static int BaseHeight(Item it) { return IsImg(it) ? Gfx.S(76) : Gfx.S(56); }
         static int HeaderHeight { get { return Gfx.S(28); } }
 
+        public Rectangle ScreenRectOf(int i)
+        {
+            if (i < 0 || i >= items.Count || i >= tops.Length) return Rectangle.Empty;
+            int hdr = heads[i] != null ? HeaderHeight : 0;
+            Rectangle r = new Rectangle(Gfx.S(8), tops[i] - scrollY + hdr + Gfx.S(2), Math.Max(1, Width - Gfx.S(22)), Math.Max(1, hs[i] - hdr - Gfx.S(4)));
+            if (!ClientRectangle.Contains(r)) return Rectangle.Empty;
+            return RectangleToScreen(r);
+        }
+
         int MaxScroll { get { return Math.Max(0, total - Height + Gfx.S(4)); } }
 
         // headers[i] 不为空时,在第 i 条上方显示分组标题(如"置顶""最近")
@@ -4441,6 +4451,7 @@ namespace Glean
             g.AddValue("作者", Brand.Author);
             g.AddValue("数据位置", Util.FriendlyPath(Config.DataPath));
             g.AddValue("高分屏适配", (Native.IsProcessDPIAware() ? "已启用" : "未启用") + "  ·  缩放 " + (int)Math.Round(Gfx.Scale * 100) + "%");
+            g.AddValue("动画引擎", "流光 Glint Motion(自研 · 弹簧物理 · 跟随屏幕刷新)");
             g.AddValue("开源组件", "ZXing.Net(二维码识别,Apache 2.0)");
             AddGroup(p, Gfx.S(276), null, g, "© 2026 " + Brand.Author);
         }
@@ -4789,6 +4800,7 @@ namespace Glean
             public float X;      // 卡片当前位置(内容坐标)
             public float Lift;   // 悬停上浮程度 0~1
             public float V;      // 位置速度(弹簧动画)
+            public float LV;     // 上浮的速度
         }
 
         List<Item> items = new List<Item>();
@@ -4803,7 +4815,7 @@ namespace Glean
         double lastTick;
         bool animHiRes;
         int appearStagger = 30, appearDur = 260;
-        readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
+        readonly Func<double, bool> animFn;   // 跟着屏幕刷新走的动画(Frames)
         public string EmptyText { get; set; }
         public event Action<int> ItemActivated;
         public event Action<int, Point> ItemContext;
@@ -4829,8 +4841,7 @@ namespace Glean
             TabStop = false;
             ImeMode = ImeMode.Disable;   // 卡片区关闭输入法:空格、方向键不会被输入法截走
             EmptyText = "";
-            anim.Interval = 15;
-            anim.Tick += delegate { Animate(); };
+            animFn = AnimStep;
             Item.ThumbReady += OnThumbReady;
             Codes.Ready += OnThumbReady;   // 二维码识别完了,卡片上要补一个角标
         }
@@ -4905,18 +4916,27 @@ namespace Glean
 
         void Kick()
         {
-            if (!anim.Enabled)
-            {
-                lastTick = Gfx.Ms - 16.67;
-                if (!animHiRes) { animHiRes = true; Gfx.HiRes(true); }
-                anim.Start();
-            }
+            if (IsHandleCreated) Frames.Add(this, animFn);
         }
 
         void StopAnim()
         {
-            anim.Stop();
-            if (animHiRes) { animHiRes = false; Gfx.HiRes(false); }
+            Frames.Remove(animFn);
+        }
+
+        // 卡片在屏幕上的位置(预览从这里放大出来);看不见就返回空
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Kick();
+        }
+
+        public Rectangle ScreenRectOf(int i)
+        {
+            if (i < 0 || i >= items.Count) return Rectangle.Empty;
+            Rectangle r = RectOf(i);
+            if (!ClientRectangle.Contains(r)) return Rectangle.Empty;
+            return RectangleToScreen(r);
         }
 
         float AppearOf(int i)
@@ -4928,13 +4948,13 @@ namespace Glean
             return (float)Gfx.BackOut(p, 0.6);   // 柔和上浮,几乎察觉不到的落定感
         }
 
-        void Animate()
+        // 每一帧(跟着屏幕刷新):滚动、卡片让位、悬停浮起,全部是弹簧
+        bool AnimStep(double dt)
         {
+            if (IsDisposed) return false;
             bool busy = false;
             double now = Gfx.Ms;
-            double dt = Math.Max(1, Math.Min(50, now - lastTick));
-            lastTick = now;
-            float kScroll = Gfx.Ease(0.18f, dt), kX = Gfx.Ease(0.2f, dt), kLift = Gfx.Ease(0.3f, dt);
+            bool still = !Frames.Enabled;   // 系统关了动画:直接到位
             if (reordering)
             {
                 // 拖到两侧边缘时自动滚动
@@ -4944,10 +4964,9 @@ namespace Glean
                 UpdateInsert();
                 busy = true;
             }
-            // 滚动用弹簧:有惯性,到边缘会轻轻回弹
-            float d = targetX - scrollX;
-            if (Math.Abs(d) < 0.6f) { scrollX = targetX; scrollV = 0; }
-            else { scrollX += d * kScroll; busy = true; }
+            // 滚动:临界阻尼的弹簧,跟手、有惯性、停得干净
+            if (still) { scrollX = targetX; scrollV = 0; }
+            else if (Spring.Step(ref scrollX, ref scrollV, targetX, dt, 0.32, 1.0, 0.4f)) busy = true;
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -4956,20 +4975,18 @@ namespace Glean
                 if (reordering && i == dragIdx) { a.X = tx; a.V = 0; }
                 else
                 {
-                    // 弹簧:卡片让位、归位时带一点点回弹
-                    // 平滑靠拢,不回弹
-                    float dx = tx - a.X;
-                    if (Math.Abs(dx) < 0.5f) a.X = tx;
-                    else { a.X += dx * kX; busy = true; }
+                    // 卡片让位、归位、删除后补位:带一点点回弹的弹簧,落定很轻
+                    if (still) { a.X = tx; a.V = 0; }
+                    else if (Spring.Step(ref a.X, ref a.V, tx, dt, 0.34, 0.86, 0.4f)) busy = true;
                 }
+                // 悬停浮起:轻快的弹簧,浮到顶时有一丝几乎察觉不到的回弹(像 macOS 程序坞)
                 float tl = reordering ? 0f : (i == hover ? 1f : (i == selected ? 0.5f : 0f));
-                float dl = tl - a.Lift;
-                if (Math.Abs(dl) < 0.02f) a.Lift = tl;
-                else { a.Lift += dl * kLift; busy = true; }
+                if (still) { a.Lift = tl; a.LV = 0; }
+                else if (Spring.Step(ref a.Lift, ref a.LV, tl, dt, 0.26, 0.74, 0.008f)) busy = true;
             }
             if ((now - appearStart) < appearDur + appearStagger * 14) busy = true;
             Invalidate();
-            if (!busy) StopAnim();
+            return busy;
         }
 
         // mode:0 保持位置(排序/删除后平滑挪动)  1 快速入场  2 完整入场
@@ -5963,6 +5980,14 @@ namespace Glean
         // force = 右键"识别二维码":不管自动识别开没开都识别,没找到也说一声
         public void ShowFor(Item it, Rectangle shelf, bool beside, bool force)
         {
+            ShowFor(it, shelf, beside, force, Rectangle.Empty);
+        }
+
+        // from = 卡片在屏幕上的位置:预览从这张卡片"放大"出来
+        Rectangle morphFrom;
+        public void ShowFor(Item it, Rectangle shelf, bool beside, bool force, Rectangle from)
+        {
+            morphFrom = from;
             Theme t = Theme.Cur;
             BackColor = t.Card;
             hint = "空格 关闭预览   ·   Enter 粘贴   ·   ← → 切换";
@@ -6045,7 +6070,26 @@ namespace Glean
             }
             Invalidate();
             popY = y;
-            if (!Visible)
+            if (!Visible && !MorphWindow.Running && !morphFrom.IsEmpty && Frames.Enabled)
+            {
+                // 从卡片放大出来:先把预览完整画成一张图,交给形变窗口去飞,快到位时换成真窗口
+                Bitmap snap = Snapshot();
+                Bitmap card = MorphWindow.Grab(morphFrom);
+                if (snap != null)
+                {
+                    int token = ++morphToken;
+                    MorphWindow.Run(card, morphFrom, Gfx.S(14), snap, Bounds, Gfx.S(8), true, delegate
+                    {
+                        if (token != morphToken) return;
+                        Top = popY;
+                        Show();
+                        Update();
+                    });
+                    return;
+                }
+                if (card != null) card.Dispose();
+            }
+            if (!Visible && !MorphWindow.Running)
             {
                 // 淡入 + 轻轻上浮
                 Top = y + Gfx.S(12);
@@ -6054,6 +6098,35 @@ namespace Glean
                 if (!popHiRes) { popHiRes = true; Gfx.HiRes(true); }
                 pop.Start();
             }
+        }
+
+        int morphToken;
+
+        // 把预览窗口(还没显示时)完整画成一张图
+        Bitmap Snapshot()
+        {
+            try
+            {
+                CreateControl();
+                PerformLayout();
+                Bitmap b = new Bitmap(Width, Height, PixelFormat.Format32bppArgb);
+                DrawToBitmap(b, new Rectangle(0, 0, Width, Height));
+                return b;
+            }
+            catch (Exception ex) { SnapError = ex.Message; return null; }
+        }
+        public static string SnapError;
+
+        // 关闭预览:缩回到那张卡片里(to = 卡片在屏幕上的位置;空的话直接关)
+        public void HideLook(Rectangle to)
+        {
+            if (!Visible || to.IsEmpty || !Frames.Enabled) { HideLook(); return; }
+            Bitmap snap = MorphWindow.Grab(Bounds);
+            Bitmap card = MorphWindow.Grab(to);
+            Rectangle from = Bounds;
+            HideLook();
+            if (snap == null) { if (card != null) card.Dispose(); return; }
+            MorphWindow.Run(card, to, Gfx.S(14), snap, from, Gfx.S(8), false, null);
         }
 
         static readonly HashSet<string> TextExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -6234,6 +6307,8 @@ namespace Glean
         public void HideLook()
         {
             lookToken++;
+            morphToken++;
+            if (!Visible) MorphWindow.Cancel();   // 正在放大出来时按了关闭:直接停掉
             StopPop();
             if (Visible) Hide();
             Image old = pic.Image;
@@ -7851,7 +7926,7 @@ namespace Glean
             {
                 bool same = quick.Visible && strip.Selected == i;
                 strip.Selected = i;
-                if (same) quick.HideLook(); else ShowQuick();
+                if (same) CloseQuick(); else ShowQuick();
             };
             v.ZoomWheel += delegate(int delta) { SetZoom(Config.CardZoom + (delta > 0 ? 0.1f : -0.1f), true); };
         }
@@ -8342,16 +8417,56 @@ namespace Glean
             catch { }
         }
 
+        // 弹出:弹簧(像 macOS 的面板,快速升起、柔和停稳;中途收起会带着速度顺势转向)
+        // 收起:跟着屏幕刷新的加速滑走
+        readonly Spring slideSp = new Spring(0.44, 0.94);
+        Func<double, bool> slideFn;
+
         void StartSlide(int from, int to, int ms)
         {
             slideFrom = from;
             slideTo = to;
             slideMs = ms;
             slideStart = Gfx.Ms;
-            if (!slideHiRes) { slideHiRes = true; Gfx.HiRes(true); }
-            Top = from;
+            if (slideFn == null) slideFn = SlideStep;
+            if (!Frames.Enabled)
+            {
+                Top = to;
+                Sliding = false;
+                if (hiding) { hiding = false; keyPoll.Stop(); Hide(); }
+                return;
+            }
+            bool wasMoving = Sliding && Frames.Has(slideFn);
+            if (!wasMoving || hiding) { slideSp.Value = from; slideSp.Velocity = 0; Top = from; }
+            slideSp.Tune(listMode ? 0.3 : 0.38, listMode ? 1.0 : 0.9);
+            slideSp.Rest = 0.6;
+            slideSp.Target = to;
             Sliding = true;
-            slide.Start();
+            Frames.Add(this, slideFn);
+        }
+
+        bool SlideStep(double dt)
+        {
+            if (IsDisposed || !Sliding) return false;
+            bool done;
+            if (hiding)
+            {
+                double p = Math.Min(1, (Gfx.Ms - slideStart) / slideMs);
+                Top = slideFrom + (int)((slideTo - slideFrom) * p * p * p);
+                done = p >= 1;
+            }
+            else
+            {
+                done = !slideSp.Step(dt);
+                Top = (int)Math.Round(slideSp.Value);
+            }
+            if (done)
+            {
+                StopSlide();
+                if (hiding) { hiding = false; keyPoll.Stop(); Hide(); }
+                return false;
+            }
+            return true;
         }
 
         public static bool Sliding, PendingRepaint;
@@ -8359,6 +8474,7 @@ namespace Glean
         void StopSlide()
         {
             slide.Stop();
+            if (slideFn != null) Frames.Remove(slideFn);
             Sliding = false;
             if (PendingRepaint)
             {
@@ -8471,7 +8587,7 @@ namespace Glean
         {
             if ((DateTime.Now - lastPreviewToggle).TotalMilliseconds < 250) return;
             lastPreviewToggle = DateTime.Now;
-            if (quick.Visible) quick.HideLook();
+            if (quick.Visible) { if (filesMode) quick.HideLook(); else CloseQuick(); }
             else if (filesMode) ShowFileQuick();
             else { FollowHover(); ShowQuick(); }
         }
@@ -8487,7 +8603,14 @@ namespace Glean
         {
             Item it = Current();
             if (it == null) return;
-            quick.ShowFor(it, Bounds, listMode);
+            Rectangle from = quick.Visible ? Rectangle.Empty : strip.ScreenRectOf(strip.Selected);
+            quick.ShowFor(it, Bounds, listMode, false, from);
+        }
+
+        // 关闭预览:缩回当前选中的那张卡片
+        void CloseQuick()
+        {
+            quick.HideLook(strip.ScreenRectOf(strip.Selected));
         }
 
         void Choose(int index, bool paste)
@@ -15241,6 +15364,443 @@ namespace Glean
                 return dst;
             }
             catch { return path; }
+        }
+    }
+
+    // ================================================================ 流光 Glint Motion · 拾光自研动画引擎
+    // 1. Frames:跟着显示器刷新走的"心跳"。等显卡的垂直同步信号(拿不到就等系统合成器,再不行才用定时器),
+    //    60Hz 屏每秒 60 帧、144Hz 屏每秒 144 帧,帧与帧之间间隔均匀;没有动画时线程自动退出,不占资源。
+    // 2. Spring:苹果式的弹簧物理。用"响应时间 + 阻尼比"描述手感,动画中途换目标会带着当前速度顺势转向,不会跳。
+    static class Frames
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        struct OpenAdapter { public IntPtr hDc; public uint hAdapter; public uint LuidLow; public int LuidHigh; public uint VidPnSourceId; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct WaitVBlank { public uint hAdapter; public uint hDevice; public uint VidPnSourceId; }
+        [DllImport("gdi32.dll")] static extern int D3DKMTOpenAdapterFromHdc(ref OpenAdapter p);
+        [DllImport("gdi32.dll")] static extern int D3DKMTWaitForVerticalBlankEvent(ref WaitVBlank p);
+        [DllImport("dwmapi.dll")] static extern int DwmFlush();
+        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+
+        class Sub { public Control Owner; public Func<double, bool> Step; }
+        static readonly List<Sub> subs = new List<Sub>();
+        static Thread loop;
+        static volatile bool pending;
+        static double last;
+        static int vblankMode = -1;   // -1 没试过  0 显卡垂直同步  1 系统合成器  2 定时器
+        static WaitVBlank wait;
+        public static string Mode { get { return vblankMode == 0 ? "vsync" : vblankMode == 1 ? "dwm" : vblankMode == 2 ? "timer" : "?"; } }
+
+        // step(dt 毫秒) 返回 true 表示下一帧还要继续
+        public static void Add(Control owner, Func<double, bool> step)
+        {
+            lock (subs)
+            {
+                foreach (Sub s in subs) if (s.Step == step) return;
+                subs.Add(new Sub { Owner = owner, Step = step });
+                if (loop == null)
+                {
+                    loop = new Thread(Loop);
+                    loop.IsBackground = true;
+                    loop.Priority = ThreadPriority.AboveNormal;
+                    loop.Start();
+                }
+            }
+        }
+
+        public static void Remove(Func<double, bool> step)
+        {
+            lock (subs) subs.RemoveAll(s => s.Step == step);
+        }
+
+        public static bool Has(Func<double, bool> step)
+        {
+            lock (subs) return subs.Any(s => s.Step == step);
+        }
+
+        static void WaitFrame()
+        {
+            if (vblankMode < 0)
+            {
+                vblankMode = 2;
+                try
+                {
+                    IntPtr dc = GetDC(IntPtr.Zero);
+                    OpenAdapter o = new OpenAdapter();
+                    o.hDc = dc;
+                    if (D3DKMTOpenAdapterFromHdc(ref o) == 0)
+                    {
+                        wait.hAdapter = o.hAdapter;
+                        wait.VidPnSourceId = o.VidPnSourceId;
+                        vblankMode = 0;
+                    }
+                    ReleaseDC(IntPtr.Zero, dc);
+                }
+                catch { }
+            }
+            double t0 = Gfx.Ms;
+            if (vblankMode == 0)
+            {
+                try { if (D3DKMTWaitForVerticalBlankEvent(ref wait) != 0) vblankMode = 1; } catch { vblankMode = 1; }
+            }
+            else if (vblankMode == 1)
+            {
+                try { if (DwmFlush() != 0) vblankMode = 2; } catch { vblankMode = 2; }
+            }
+            else Thread.Sleep(15);
+            // 有的环境里等待会立刻返回(没有真正的显示器):至少隔 4 毫秒,防止空转
+            double spent = Gfx.Ms - t0;
+            if (spent < 4) Thread.Sleep(Math.Max(1, (int)(4 - spent)));
+        }
+
+        static void Loop()
+        {
+            while (true)
+            {
+                Control owner;
+                lock (subs)
+                {
+                    subs.RemoveAll(s => s.Owner == null || s.Owner.IsDisposed);
+                    if (subs.Count == 0) { loop = null; last = 0; return; }
+                    owner = subs[0].Owner;
+                }
+                WaitFrame();
+                if (pending) continue;   // 上一帧界面线程还没处理完:这一帧跳过,不排队堆积
+                try
+                {
+                    if (!owner.IsHandleCreated) { Thread.Sleep(5); continue; }
+                    pending = true;
+                    owner.BeginInvoke(new MethodInvoker(Tick));
+                }
+                catch { pending = false; }
+            }
+        }
+
+        static void Tick()
+        {
+            pending = false;
+            double now = Gfx.Ms;
+            double dt = last <= 0 ? 16.67 : Math.Max(1, Math.Min(34, now - last));   // 偶尔卡一下:放慢,不跳帧
+            last = now;
+            List<Sub> copy;
+            lock (subs) copy = subs.ToList();
+            foreach (Sub s in copy)
+            {
+                bool more = false;
+                try { more = s.Owner != null && !s.Owner.IsDisposed && s.Step(dt); } catch { }
+                if (!more) lock (subs) subs.Remove(s);
+            }
+        }
+
+        // Windows 设置里关掉了"显示动画":拾光也用最简单的过渡
+        [DllImport("user32.dll")] static extern bool SystemParametersInfo(int a, int b, ref bool v, int c);
+        static double checkedAt = -1e9;
+        static bool enabled = true;
+        public static bool ForceOn;   // 测试用
+        public static bool Enabled
+        {
+            get
+            {
+                if (ForceOn) return true;
+                if (Gfx.Ms - checkedAt > 5000)
+                {
+                    checkedAt = Gfx.Ms;
+                    bool on = true;
+                    try { if (SystemParametersInfo(0x1042, 0, ref on, 0)) enabled = on; } catch { }
+                }
+                return enabled;
+            }
+        }
+    }
+
+    // 弹簧:response = 大约多久到位(秒),damping = 阻尼比(1 = 不回弹;0.8 左右有一点点回弹)
+    class Spring
+    {
+        public double Value, Velocity, Target;
+        public double Rest = 0.25;   // 离目标多近、速度多小就算停下
+        double k, c;
+
+        public Spring(double response, double damping) { Tune(response, damping); }
+
+        public void Tune(double response, double damping)
+        {
+            double w = 2 * Math.PI / Math.Max(0.02, response);
+            k = w * w;
+            c = 2 * damping * w;
+        }
+
+        public void Snap(double v) { Value = Target = v; Velocity = 0; }
+
+        public bool Moving { get { return Math.Abs(Value - Target) > Rest || Math.Abs(Velocity) > Rest * 8; } }
+
+        // 推进 dt 毫秒;返回 true 表示还在动
+        public bool Step(double dtMs)
+        {
+            double dt = dtMs / 1000.0;
+            int n = Math.Max(1, (int)Math.Ceiling(dt / 0.004));
+            double h = dt / n;
+            for (int i = 0; i < n; i++)
+            {
+                double a = -k * (Value - Target) - c * Velocity;
+                Velocity += a * h;
+                Value += Velocity * h;
+            }
+            if (!Moving) { Value = Target; Velocity = 0; return false; }
+            return true;
+        }
+
+        // 不想单独建对象时用的版本(卡片上每张一组 x / v)
+        public static bool Step(ref float x, ref float v, float target, double dtMs, double response, double damping, float rest)
+        {
+            double w = 2 * Math.PI / response, k = w * w, c = 2 * damping * w;
+            double dt = dtMs / 1000.0;
+            int n = Math.Max(1, (int)Math.Ceiling(dt / 0.004));
+            double h = dt / n, xx = x, vv = v;
+            for (int i = 0; i < n; i++)
+            {
+                double a = -k * (xx - target) - c * vv;
+                vv += a * h;
+                xx += vv * h;
+            }
+            if (Math.Abs(xx - target) < rest && Math.Abs(vv) < rest * 8) { x = target; v = 0; return false; }
+            x = (float)xx; v = (float)vv;
+            return true;
+        }
+    }
+
+    // 形变过渡:一张"快照"从 A 处的矩形(比如一张卡片)放大、移动到 B 处(比如预览窗口),
+    // 同时 A 的样子淡出、B 的样子淡入,圆角和投影跟着变化。macOS 快速预览就是这种效果
+    class MorphWindow : Form
+    {
+        [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
+        [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
+        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND blend, int flags);
+        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+
+        readonly Bitmap fromImg, toImg;
+        readonly Rectangle from, to;
+        readonly float rFrom, rTo;
+        readonly Spring sp;
+        readonly bool opening;
+        Action done;
+        Rectangle area;
+        Bitmap frame;
+        bool finished;
+        readonly Func<double, bool> stepFn;
+        static MorphWindow current;
+
+        // opening = true:从 from 变到 to;false:从 to 缩回 from。done 在快要结束时调用一次(用来显示真窗口)
+        public static void Run(Bitmap fromImg, Rectangle from, float rFrom, Bitmap toImg, Rectangle to, float rTo, bool opening, Action done)
+        {
+            Cancel();
+            current = new MorphWindow(fromImg, from, rFrom, toImg, to, rTo, opening, done);
+            current.Start();
+        }
+
+        public static void Cancel()
+        {
+            if (current != null && !current.IsDisposed) current.Finish(true);
+            current = null;
+        }
+
+        public static bool Running { get { return current != null && !current.IsDisposed; } }
+
+        MorphWindow(Bitmap fromImg, Rectangle from, float rFrom, Bitmap toImg, Rectangle to, float rTo, bool opening, Action done)
+        {
+            this.fromImg = fromImg; this.toImg = toImg;
+            this.from = from; this.to = to; this.rFrom = rFrom; this.rTo = rTo;
+            this.opening = opening;
+            this.done = done;
+            // 打开:轻快、有一点点"弹"的落定;关闭:干脆地收回去
+            sp = opening ? new Spring(0.36, 0.82) : new Spring(0.26, 1.0);
+            sp.Rest = 0.002;
+            sp.Value = opening ? 0 : 1;
+            sp.Target = opening ? 1 : 0;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            int pad = Gfx.S(40);
+            area = Rectangle.Union(from, to);
+            area.Inflate(pad, pad);
+            Bounds = area;
+            stepFn = Step;
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x80000 | 0x80 | 0x08000000 | 0x8 | 0x20;   // 分层 + 工具窗口 + 不激活 + 置顶 + 鼠标穿透
+                return cp;
+            }
+        }
+
+        void Start()
+        {
+            Show();
+            Bounds = area;
+            Render();
+            Frames.Add(this, stepFn);
+        }
+
+        bool Step(double dt)
+        {
+            if (finished || IsDisposed) return false;
+            bool moving = sp.Step(dt);
+            // 快到位时(还剩一点点余韵)就把真窗口亮出来,再用一两帧把快照淡掉,衔接不留痕迹
+            double p = sp.Value;
+            // 打开:快到位时换成真窗口,快照立刻收掉(不让放大过的快照盖在清晰的真窗口上)
+            // 关闭:缩到几乎看不见就结束,不留残影
+            bool end = !moving || (opening ? p > 0.985 && Math.Abs(sp.Velocity) < 0.6 : p < 0.03);
+            if (end)
+            {
+                Action d = done;
+                done = null;
+                if (d != null) { try { d(); } catch { } }
+                if (!opening) Render();
+                Finish(false);
+                return false;
+            }
+            Render();
+            return true;
+        }
+
+        void Finish(bool cancelled)
+        {
+            if (finished) return;
+            finished = true;
+            Frames.Remove(stepFn);
+            if (done != null && !cancelled) { Action d = done; done = null; try { d(); } catch { } }
+            // 晚一帧再关:真窗口已经画出来了,快照才消失,中间不会闪
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = cancelled || !opening ? 1 : 20;
+            t.Tick += delegate { t.Dispose(); try { Close(); } catch { } };
+            t.Start();
+        }
+
+        static float Smooth(double a, double b, double x)
+        {
+            double t = Math.Max(0, Math.Min(1, (x - a) / (b - a)));
+            return (float)(t * t * (3 - 2 * t));
+        }
+
+        void Render()
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            double p = sp.Value;
+            float q = (float)p;
+            // 当前的矩形:位置和大小都按进度插值(打开时略微过冲一点点,落定更有弹性)
+            RectangleF r = new RectangleF(
+                from.X + (to.X - from.X) * q, from.Y + (to.Y - from.Y) * q,
+                Math.Max(4, from.Width + (to.Width - from.Width) * q), Math.Max(4, from.Height + (to.Height - from.Height) * q));
+            r.Offset(-area.X, -area.Y);
+            float rad = rFrom + (rTo - rFrom) * Math.Max(0, Math.Min(1, q));
+            float pc = (float)Math.Max(0, Math.Min(1, p));
+            if (frame == null) frame = new Bitmap(area.Width, area.Height, PixelFormat.Format32bppPArgb);
+            using (Graphics g = Graphics.FromImage(frame))
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.InterpolationMode = InterpolationMode.Bilinear;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                // 投影:越接近目标越深、越大(像窗口从卡片里"浮"起来)
+                float lift = pc;
+                int layers = 10;
+                for (int k = layers; k >= 1; k--)
+                {
+                    float spread = k * Gfx.S(2) * (0.4f + 0.6f * lift);
+                    RectangleF sr = new RectangleF(r.X - spread / 2, r.Y - spread / 3 + Gfx.S(6) * lift, r.Width + spread, r.Height + spread);
+                    using (GraphicsPath sh = Timeline.RR(sr, rad + spread / 2))
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb((int)(7 * (0.35f + 0.65f * lift)), 0, 0, 0)))
+                        g.FillPath(b, sh);
+                }
+                using (GraphicsPath clip = Timeline.RR(r, rad))
+                {
+                    GraphicsState st = g.Save();
+                    g.SetClip(clip);
+                    // 起点的样子渐渐淡出,终点的样子渐渐淡入(终点盖在上面)
+                    float aTo = Smooth(0.08, 0.55, p), aFrom = 1 - Smooth(0.35, 0.8, p);
+                    if (fromImg != null && aFrom > 0.01f) DrawFaded(g, fromImg, r, aFrom);
+                    else if (fromImg == null) using (SolidBrush b = new SolidBrush(Theme.Cur.Card)) g.FillRectangle(b, r);
+                    if (toImg != null && aTo > 0.01f) DrawFaded(g, toImg, r, aTo);
+                    g.Restore(st);
+                }
+                using (GraphicsPath edge = Timeline.RR(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), rad))
+                using (Pen pen = new Pen(Color.FromArgb(Theme.Cur.Dark ? 40 : 22, Theme.Cur.Dark ? 255 : 0, Theme.Cur.Dark ? 255 : 0, Theme.Cur.Dark ? 255 : 0), 1f))
+                    g.DrawPath(pen, edge);
+            }
+            // 关闭时最后一点淡出;打开时一开始很快变实
+            float alpha = opening ? Math.Min(1f, 0.35f + 0.65f * Smooth(0, 0.25, p)) : Smooth(0.03, 0.4, p);
+            Push((byte)(alpha * 255));
+        }
+
+        static void DrawFaded(Graphics g, Bitmap img, RectangleF r, float a)
+        {
+            if (a >= 0.99f) { g.DrawImage(img, r); return; }
+            using (ImageAttributes ia = new ImageAttributes())
+            {
+                ColorMatrix cm = new ColorMatrix();
+                cm.Matrix33 = a;
+                ia.SetColorMatrix(cm);
+                g.DrawImage(img, new Rectangle((int)Math.Round(r.X), (int)Math.Round(r.Y), (int)Math.Round(r.Width), (int)Math.Round(r.Height)),
+                    0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
+            }
+        }
+
+        void Push(byte alpha)
+        {
+            IntPtr screen = GetDC(IntPtr.Zero);
+            IntPtr mem = CreateCompatibleDC(screen);
+            IntPtr hb = IntPtr.Zero, old = IntPtr.Zero;
+            try
+            {
+                hb = frame.GetHbitmap(Color.FromArgb(0));
+                old = SelectObject(mem, hb);
+                PT pos = new PT(area.X, area.Y), src = new PT(0, 0);
+                SZ size = new SZ(area.Width, area.Height);
+                BLEND b = new BLEND();
+                b.Alpha = alpha; b.Format = 1;
+                UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref b, 2);
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, screen);
+                if (hb != IntPtr.Zero) { SelectObject(mem, old); DeleteObject(hb); }
+                DeleteDC(mem);
+            }
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            Frames.Remove(stepFn);
+            if (frame != null) frame.Dispose();
+            if (fromImg != null) fromImg.Dispose();
+            if (toImg != null) toImg.Dispose();
+            if (current == this) current = null;
+            base.OnFormClosed(e);
+        }
+
+        // 截下屏幕上的一块(卡片当前的样子)
+        public static Bitmap Grab(Rectangle r)
+        {
+            if (r.Width <= 0 || r.Height <= 0) return null;
+            try
+            {
+                Bitmap b = new Bitmap(r.Width, r.Height, PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(b)) g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                return b;
+            }
+            catch { return null; }
         }
     }
 

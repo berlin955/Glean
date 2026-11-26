@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.35.0.0")]
-[assembly: AssemblyFileVersion("0.35.0.0")]
+[assembly: AssemblyVersion("0.36.0.0")]
+[assembly: AssemblyFileVersion("0.36.0.0")]
 
 namespace Glean
 {
@@ -81,7 +81,7 @@ namespace Glean
         public static Keys ScanKey = Keys.Q;
         public static string ScanHotkeyText { get { return Describe(ScanCtrl, ScanAlt, ScanShift, false, ScanKey); } }
         public static uint ScanModifiers { get { return (ScanAlt ? 1u : 0) | (ScanCtrl ? 2u : 0) | (ScanShift ? 4u : 0); } }
-        public const string Version = "0.35";
+        public const string Version = "0.36";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -6113,8 +6113,9 @@ namespace Glean
                 DrawToBitmap(b, new Rectangle(0, 0, Width, Height));
                 return b;
             }
-            catch { return null; }
+            catch (Exception ex) { SnapError = ex.Message; return null; }
         }
+        public static string SnapError;
 
         // 关闭预览:缩回到那张卡片里(to = 卡片在屏幕上的位置;空的话直接关)
         public void HideLook(Rectangle to)
@@ -8437,8 +8438,8 @@ namespace Glean
             }
             bool wasMoving = Sliding && Frames.Has(slideFn);
             if (!wasMoving || hiding) { slideSp.Value = from; slideSp.Velocity = 0; Top = from; }
-            slideSp.Tune(listMode ? 0.3 : 0.44, listMode ? 1.0 : 0.94);
-            slideSp.Rest = 0.4;
+            slideSp.Tune(listMode ? 0.3 : 0.38, listMode ? 1.0 : 0.9);
+            slideSp.Rest = 0.6;
             slideSp.Target = to;
             Sliding = true;
             Frames.Add(this, slideFn);
@@ -15618,7 +15619,7 @@ namespace Glean
             this.opening = opening;
             this.done = done;
             // 打开:轻快、有一点点"弹"的落定;关闭:干脆地收回去
-            sp = opening ? new Spring(0.36, 0.82) : new Spring(0.26, 1.0);
+            sp = opening ? new Spring(0.36, 0.82) : new Spring(0.22, 0.92);
             sp.Rest = 0.002;
             sp.Value = opening ? 0 : 1;
             sp.Target = opening ? 1 : 0;
@@ -15646,38 +15647,61 @@ namespace Glean
 
         void Start()
         {
+            traceT0 = Gfx.Ms;
+            if (Trace != null) Trace.Add("start " + (opening ? "open" : "close"));
             Show();
             Bounds = area;
             Render();
             Frames.Add(this, stepFn);
         }
 
+        public static List<string> Trace;   // 测试用:记录每一帧
+
+        // 测试用:停掉动画,把进度 p 时的画面拿出来看
+        public static Bitmap DebugFrame(double p)
+        {
+            if (current == null) return null;
+            Frames.Remove(current.stepFn);
+            current.sp.Value = p;
+            current.sp.Velocity = 0;
+            current.Render();
+            return current.frame == null ? null : new Bitmap(current.frame);
+        }
+        static double traceT0;
+
         bool Step(double dt)
         {
             if (finished || IsDisposed) return false;
             bool moving = sp.Step(dt);
+            if (Trace != null) Trace.Add((int)(Gfx.Ms - traceT0) + ":" + sp.Value.ToString("0.000", CultureInfo.InvariantCulture));
             // 快到位时(还剩一点点余韵)就把真窗口亮出来,再用一两帧把快照淡掉,衔接不留痕迹
             double p = sp.Value;
-            if (done != null && (opening ? p > 0.985 && Math.Abs(sp.Velocity) < 0.6 : p < 0.02) || (!moving && done != null))
+            // 打开:快到位时换成真窗口,快照立刻收掉(不让放大过的快照盖在清晰的真窗口上)
+            // 关闭:缩到几乎看不见就结束,不留残影
+            bool end = !moving || (opening ? p > 0.985 && Math.Abs(sp.Velocity) < 0.6 : p < 0.06);
+            if (end)
             {
                 Action d = done;
                 done = null;
-                try { d(); } catch { }
+                if (d != null) { try { d(); } catch { } }
+                if (!opening) Render();
+                Finish(false);
+                return false;
             }
             Render();
-            if (!moving) { Finish(false); return false; }
             return true;
         }
 
         void Finish(bool cancelled)
         {
+            if (Trace != null) Trace.Add((int)(Gfx.Ms - traceT0) + ":finish" + (cancelled ? "(cancel)" : ""));
             if (finished) return;
             finished = true;
             Frames.Remove(stepFn);
             if (done != null && !cancelled) { Action d = done; done = null; try { d(); } catch { } }
             // 晚一帧再关:真窗口已经画出来了,快照才消失,中间不会闪
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
-            t.Interval = cancelled ? 1 : 30;
+            t.Interval = cancelled || !opening ? 1 : 20;
             t.Tick += delegate { t.Dispose(); try { Close(); } catch { } };
             t.Start();
         }
@@ -15734,7 +15758,7 @@ namespace Glean
                     g.DrawPath(pen, edge);
             }
             // 关闭时最后一点淡出;打开时一开始很快变实
-            float alpha = opening ? Math.Min(1f, 0.35f + 0.65f * Smooth(0, 0.25, p)) : Math.Min(1f, Smooth(0, 0.3, p) * 0.9f + 0.1f);
+            float alpha = opening ? Math.Min(1f, 0.35f + 0.65f * Smooth(0, 0.25, p)) : Smooth(0.06, 0.4, p);
             Push((byte)(alpha * 255));
         }
 

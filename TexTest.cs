@@ -82,7 +82,8 @@ static class TexTest
         Application.EnableVisualStyles();
         Glean.Config.ThemeMode = 1; Glean.Config.ShelfTransparency = 0; Glean.Config.Layout = 1;
         Glean.Theme.Refresh();
-        Out("animations enabled: " + Glean.Frames.Enabled);
+        Out("animations enabled (system): " + Glean.Frames.Enabled);
+        Glean.Frames.ForceOn = true;
         // 弹簧:从 0 到 100,记录到位时间和最大过冲
         foreach (double[] cfg in new double[][] { new double[] { 0.44, 0.94 }, new double[] { 0.34, 0.86 }, new double[] { 0.26, 0.74 }, new double[] { 0.36, 0.82 } })
         {

@@ -15394,10 +15394,12 @@ namespace Glean
         [DllImport("user32.dll")] static extern bool SystemParametersInfo(int a, int b, ref bool v, int c);
         static double checkedAt = -1e9;
         static bool enabled = true;
+        public static bool ForceOn;   // 测试用
         public static bool Enabled
         {
             get
             {
+                if (ForceOn) return true;
                 if (Gfx.Ms - checkedAt > 5000)
                 {
                     checkedAt = Gfx.Ms;

@@ -67,10 +67,16 @@ static class TexTest
             // 预览形变:每帧渲染要多久
             cv.GetType().GetProperty("Selected").SetValue(cv, 1, null);
             Pump(100);
+            Stopwatch sq = Stopwatch.StartNew();
             typeof(Glean.ShelfForm).GetMethod("ShowQuick", NP).Invoke(shelf, null);
+            Out("[glass " + glass + "] ShowQuick (snapshot + bake + first frame): " + sq.ElapsedMilliseconds + " ms");
             Pump(10);
+            object mw = typeof(Glean.MorphWindow).GetField("current", NP).GetValue(null);
+            Glean.Frames.Remove((Func<double, bool>)mw.GetType().GetField("stepFn", NP).GetValue(mw));
+            object spr = mw.GetType().GetField("sp", NP).GetValue(mw);
+            MethodInfo render = mw.GetType().GetMethod("Render", NP);
             List<double> mr = new List<double>();
-            for (int i = 0; i < 20; i++) { Stopwatch p = Stopwatch.StartNew(); using (Bitmap b = Glean.MorphWindow.DebugFrame(i / 20.0)) { } mr.Add(p.Elapsed.TotalMilliseconds); }
+            for (int i = 0; i < 40; i++) { ((Glean.Spring)spr).Value = (i % 20) / 20.0; Stopwatch p = Stopwatch.StartNew(); render.Invoke(mw, null); mr.Add(p.Elapsed.TotalMilliseconds); }
             Out("[glass " + glass + "] morph frame render: " + Stats(mr));
             Glean.MorphWindow.Cancel(); Pump(200);
             Glean.QuickLook ql = (Glean.QuickLook)typeof(Glean.ShelfForm).GetField("quick", NP).GetValue(shelf);

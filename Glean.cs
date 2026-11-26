@@ -39,6 +39,7 @@ namespace Glean
         public static Keys Key = Keys.V;
         public static int MaxItems = 200;          // 最多保留多少条(不含置顶)
         public static bool AutoUpdate = true;          // 自动检查更新
+        public static bool UpdatePopup = true;         // 有新版本时在屏幕右下角弹出提醒(关掉就只在托盘冒个气泡)
         public static long LastUpdateCheck = 0;        // 上次检查的时间(Ticks)
         public static string SkipVersion = "";         // 用户选了"跳过此版本"的版本号
         public static bool LastFilesMode = false;   // 上次关闭时停在"文件夹"
@@ -165,6 +166,7 @@ namespace Glean
                             case "key": Key = ParseKey(v); break;
                             case "max": MaxItems = Math.Max(20, Math.Min(5000, int.Parse(v))); break;
                             case "autoupdate": AutoUpdate = v == "1"; break;
+                            case "updatepopup": UpdatePopup = v == "1"; break;
                             case "lastcheck": LastUpdateCheck = long.Parse(v, CultureInfo.InvariantCulture); break;
                             case "skipversion": SkipVersion = v; break;
                             case "lastfiles": LastFilesMode = v == "1"; break;
@@ -231,6 +233,7 @@ namespace Glean
                     "key=" + KeyName(Key),
                     "max=" + MaxItems,
                     "autoupdate=" + (AutoUpdate ? "1" : "0"),
+                    "updatepopup=" + (UpdatePopup ? "1" : "0"),
                     "lastcheck=" + LastUpdateCheck.ToString(CultureInfo.InvariantCulture),
                     "skipversion=" + SkipVersion,
                     "lastfiles=" + (LastFilesMode ? "1" : "0"),
@@ -3951,6 +3954,7 @@ namespace Glean
         readonly Toggle tImages = new Toggle();
         readonly Toggle tAuto = new Toggle();
         readonly Toggle tUpdate = new Toggle();
+        readonly Toggle tUpdatePopup = new Toggle();
         readonly Toggle tWinV = new Toggle();
         readonly SearchBox pathBox = new SearchBox();
         readonly Toggle tMove = new Toggle();
@@ -4219,6 +4223,7 @@ namespace Glean
             // ---- 软件更新
             SettingsGroup gu = new SettingsGroup();
             gu.AddRow("自动检查更新", "每天在后台检查一次 GitHub 上的新版本", Switch(tUpdate, Config.AutoUpdate), Gfx.S(52));
+            gu.AddRow("有新版本时弹窗提醒", "在屏幕右下角弹出提醒;关掉后只在托盘图标上冒个提示", Switch(tUpdatePopup, Config.UpdatePopup), Gfx.S(52));
             Btn check = new Btn();
             check.Text = "检查更新";
             check.Height = Gfx.S(30);
@@ -4504,6 +4509,7 @@ namespace Glean
             Config.Win = hotkey.Win; Config.Key = hotkey.Key;
             Config.AutoPaste = tPaste.Checked;
             Config.AutoUpdate = tUpdate.Checked;
+            Config.UpdatePopup = tUpdatePopup.Checked;
             Config.WinV = tWinV.Checked;
             Config.RecordImages = tImages.Checked;
             Config.MaxItems = MaxOptions[maxSeg.Selected];
@@ -12779,6 +12785,101 @@ namespace Glean
     }
 
     // 复制到带日期的文字时,右下角升起的小胶囊:"11月20日到期 · 还有 15 天   [提前 1 天] [当天 9:00] [⋯]"
+    // 有新版本:屏幕右下角升起的提醒卡片(和时光轴的胶囊同一种质感),不抢焦点,不打断手上的事
+    class UpdateToast : LayeredPopup
+    {
+        static UpdateToast current;
+        readonly UpdateInfo info;
+        readonly Action open;
+        readonly Bitmap logo;
+        double shownAt;
+        readonly System.Windows.Forms.Timer life = new System.Windows.Forms.Timer();
+
+        public static void Pop(UpdateInfo u, Action open)
+        {
+            if (current != null && !current.IsDisposed) current.Close();
+            current = new UpdateToast(u, open);
+            current.Popup();
+        }
+
+        UpdateToast(UpdateInfo u, Action open)
+        {
+            info = u;
+            this.open = open;
+            try { logo = Brand.Logo(Gfx.S(44)); } catch { }
+            life.Interval = 250;
+            life.Tick += delegate
+            {
+                if (MouseInside || MenuOpen) { shownAt = Gfx.Ms; return; }   // 鼠标停在上面时不消失
+                if (Gfx.Ms - shownAt > 20000) { life.Stop(); Dismiss(); }
+            };
+        }
+
+        string Version { get { return info.Tag.TrimStart('v', 'V'); } }
+
+        // 更新说明里第一条要点,当作副标题
+        string Headline
+        {
+            get
+            {
+                foreach (string raw in (info.Notes ?? "").Split('\n'))
+                {
+                    string l = raw.Trim().TrimStart('-', '*', '#', ' ').Trim();
+                    if (l.Length == 0 || l.StartsWith(Version) || Regex.IsMatch(l, @"^\d+\.\d+")) continue;
+                    l = Regex.Replace(l, @"\*\*|`", "");
+                    return l.Length > 40 ? l.Substring(0, 40) + "…" : l;
+                }
+                return "点“查看”了解这次更新了什么";
+            }
+        }
+
+        void Popup()
+        {
+            int w = Gfx.S(440), h = Gfx.S(84);
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            SetBounds(wa.Right - w - Pad - Gfx.S(10), wa.Bottom - h - Pad - Gfx.S(10) + Gfx.S(6), w + 2 * Pad, h + 2 * Pad);
+            shownAt = Gfx.Ms;
+            life.Start();
+            Appear();
+        }
+
+        protected override void PaintCard(Graphics g, Rectangle c)
+        {
+            Theme t = Theme.Cur;
+            int ls = Gfx.S(44);
+            Rectangle lr = new Rectangle(c.X + Gfx.S(18), c.Y + (c.Height - ls) / 2, ls, ls);
+            if (logo != null)
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(logo, lr);
+            }
+            // 右上角的小红点:有新东西
+            float d = Gfx.F(10f);
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(255, 69, 58))) g.FillEllipse(b, lr.Right - d * 0.7f, lr.Y - d * 0.3f, d, d);
+            using (Pen p = new Pen(t.Dark ? Color.FromArgb(40, 37, 35) : Color.FromArgb(252, 250, 247), Gfx.F(2f))) g.DrawEllipse(p, lr.Right - d * 0.7f, lr.Y - d * 0.3f, d, d);
+
+            int bh = Gfx.S(32), by = c.Y + (c.Height - bh) / 2;
+            Rectangle go = new Rectangle(c.Right - Gfx.S(16) - Gfx.S(72), by, Gfx.S(72), bh);
+            Button(g, go, "查看", true, delegate { life.Stop(); Dismiss(); if (open != null) open(); });
+            Rectangle later = new Rectangle(go.X - Gfx.S(8) - Gfx.S(64), by, Gfx.S(64), bh);
+            Button(g, later, "稍后", false, delegate { life.Stop(); Dismiss(); });
+
+            int tx = lr.Right + Gfx.S(14), tw = later.X - Gfx.S(12) - tx;
+            Timeline.Txt(g, Brand.NameCn + " 有新版本 " + Version, Gfx.Bold, new RectangleF(tx, c.Y + Gfx.S(18), tw, Gfx.S(24)), t.Text,
+                StringAlignment.Near, StringAlignment.Center, false);
+            Timeline.Txt(g, Headline, Gfx.Small, new RectangleF(tx, c.Y + Gfx.S(44), tw, Gfx.S(20)), t.Sub,
+                StringAlignment.Near, StringAlignment.Center, false);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            life.Stop();
+            if (logo != null) logo.Dispose();
+            if (current == this) current = null;
+            base.OnFormClosed(e);
+        }
+    }
+
     class Capsule : LayeredPopup
     {
         static Capsule current;
@@ -15999,11 +16100,39 @@ namespace Glean
             else WinVHook.Uninstall();
         }
 
+        UpdateInfo pendingUpdate;
+        System.Windows.Forms.Timer updateWait;
+
         void NotifyUpdate(UpdateInfo u)
         {
             updateBalloon = true;
-            tray.ShowBalloonTip(6000, "发现 " + Brand.Name + " 新版本 " + u.Tag.TrimStart('v', 'V'),
-                "点这里查看更新内容,一键升级。", ToolTipIcon.Info);
+            if (!Config.UpdatePopup)
+            {
+                tray.ShowBalloonTip(6000, "发现 " + Brand.Name + " 新版本 " + u.Tag.TrimStart('v', 'V'),
+                    "点这里查看更新内容,一键升级。", ToolTipIcon.Info);
+                return;
+            }
+            // 正在全屏看视频、玩游戏:先不打扰,每分钟看一眼,退出全屏再弹
+            pendingUpdate = u;
+            if (Timeline.FullscreenBusy())
+            {
+                if (updateWait == null)
+                {
+                    updateWait = new System.Windows.Forms.Timer();
+                    updateWait.Interval = 60 * 1000;
+                    updateWait.Tick += delegate
+                    {
+                        if (pendingUpdate == null || Timeline.FullscreenBusy()) return;
+                        updateWait.Stop();
+                        NotifyUpdate(pendingUpdate);
+                    };
+                }
+                updateWait.Start();
+                return;
+            }
+            UpdateInfo show = pendingUpdate;
+            pendingUpdate = null;
+            UpdateToast.Pop(show, delegate { updateBalloon = false; ShowUpdate(show); });
         }
 
         bool updateOpen;

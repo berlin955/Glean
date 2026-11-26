@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.33.0.0")]
-[assembly: AssemblyFileVersion("0.33.0.0")]
+[assembly: AssemblyVersion("0.34.0.0")]
+[assembly: AssemblyFileVersion("0.34.0.0")]
 
 namespace Glean
 {
@@ -80,7 +80,7 @@ namespace Glean
         public static Keys ScanKey = Keys.Q;
         public static string ScanHotkeyText { get { return Describe(ScanCtrl, ScanAlt, ScanShift, false, ScanKey); } }
         public static uint ScanModifiers { get { return (ScanAlt ? 1u : 0) | (ScanCtrl ? 2u : 0) | (ScanShift ? 4u : 0); } }
-        public const string Version = "0.33";
+        public const string Version = "0.34";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -9009,9 +9009,9 @@ namespace Glean
             {
                 if (it.IsImage)
                 {
-                    d.SetImage(Util.LoadBitmap(it.FilePath));
+                    d = ClipImage.Build(it.FilePath);
                     StringCollection sc = new StringCollection();
-                    sc.Add(it.FilePath);
+                    sc.Add(ClipImage.NamedCopy(it.FilePath, it.Time));
                     d.SetFileDropList(sc);
                 }
                 else if (it.IsFiles)
@@ -15076,6 +15076,73 @@ namespace Glean
         }
     }
 
+    // 图片放进剪切板 / 拖到别的程序时用的数据:
+    // 普通位图(大多数程序认这个)+ PNG 原图(Photoshop、Office、浏览器认这个,透明背景能保留)+ 原图的分辨率(DPI)
+    static class ClipImage
+    {
+        public static DataObject Build(string path)
+        {
+            byte[] raw = File.ReadAllBytes(path);
+            DataObject d = new DataObject();
+            using (MemoryStream ms = new MemoryStream(raw))
+            using (Image im = Image.FromStream(ms))
+            {
+                byte[] png;
+                if (im.RawFormat.Equals(ImageFormat.Png)) png = raw;   // 本来就是 PNG:原样给出去(连同里面记的分辨率)
+                else using (MemoryStream o = new MemoryStream()) { im.Save(o, ImageFormat.Png); png = o.ToArray(); }
+                d.SetData(DataFormats.Dib, false, new MemoryStream(Dib(im)));
+                d.SetData("PNG", false, new MemoryStream(png));
+            }
+            return d;
+        }
+
+        // 位图格式没有透明:透明的地方铺白色(比默认的黑色顺眼);分辨率写进文件头
+        static byte[] Dib(Image im)
+        {
+            int w = im.Width, h = im.Height;
+            int stride = (w * 3 + 3) & ~3;
+            byte[] outp = new byte[40 + stride * h];
+            using (Bitmap b = new Bitmap(w, h, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(b))
+                {
+                    g.Clear(Color.White);
+                    g.DrawImage(im, new Rectangle(0, 0, w, h));
+                }
+                int ppmX = (int)Math.Round(Math.Max(1f, im.HorizontalResolution) / 0.0254f);
+                int ppmY = (int)Math.Round(Math.Max(1f, im.VerticalResolution) / 0.0254f);
+                int[] head = { 40, w, h, 0x00180001, 0, stride * h, ppmX, ppmY, 0, 0 };   // 0x00180001 = 1 个平面、24 位
+                for (int i = 0; i < head.Length; i++) Buffer.BlockCopy(BitConverter.GetBytes(head[i]), 0, outp, i * 4, 4);
+                BitmapData bd = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                try
+                {
+                    for (int y = 0; y < h; y++)   // 位图是从下往上存的
+                        Marshal.Copy(bd.Scan0 + (h - 1 - y) * bd.Stride, outp, 40 + y * stride, w * 3);
+                }
+                finally { b.UnlockBits(bd); }
+            }
+            return outp;
+        }
+
+        // 拖到 PS 时图层名就是文件名:给一份"拾光_1126_153000.png"这样好认的副本(放在临时文件夹,一天后自动清掉)
+        public static string NamedCopy(string path, DateTime t)
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Brand.Name + " 拖拽");
+                Directory.CreateDirectory(dir);
+                foreach (string f in Directory.GetFiles(dir))
+                    try { if (File.GetLastWriteTime(f) < DateTime.Now.AddDays(-1)) File.Delete(f); } catch { }
+                string ext = System.IO.Path.GetExtension(path);
+                if (string.IsNullOrEmpty(ext)) ext = ".png";
+                string dst = System.IO.Path.Combine(dir, Brand.NameCn + "_" + t.ToString("MMdd_HHmmss", CultureInfo.InvariantCulture) + ext);
+                if (!File.Exists(dst) || new FileInfo(dst).Length != new FileInfo(path).Length) File.Copy(path, dst, true);
+                return dst;
+            }
+            catch { return path; }
+        }
+    }
+
     class MainForm : Form
     {
         const int HotkeyId = 1;
@@ -15652,8 +15719,8 @@ namespace Glean
             {
                 if (it.IsImage)
                 {
-                    using (Bitmap bmp = Util.LoadBitmap(it.FilePath))
-                        Util.Retry(delegate { Clipboard.SetImage(bmp); });
+                    DataObject d = ClipImage.Build(it.FilePath);
+                    Util.Retry(delegate { Clipboard.SetDataObject(d, true); });
                 }
                 else if (it.IsFiles)
                 {

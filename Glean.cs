@@ -15647,16 +15647,22 @@ namespace Glean
 
         void Start()
         {
+            traceT0 = Gfx.Ms;
+            if (Trace != null) Trace.Add("start " + (opening ? "open" : "close"));
             Show();
             Bounds = area;
             Render();
             Frames.Add(this, stepFn);
         }
 
+        public static List<string> Trace;   // 测试用:记录每一帧
+        static double traceT0;
+
         bool Step(double dt)
         {
             if (finished || IsDisposed) return false;
             bool moving = sp.Step(dt);
+            if (Trace != null) Trace.Add((int)(Gfx.Ms - traceT0) + ":" + sp.Value.ToString("0.000", CultureInfo.InvariantCulture));
             // 快到位时(还剩一点点余韵)就把真窗口亮出来,再用一两帧把快照淡掉,衔接不留痕迹
             double p = sp.Value;
             // 打开:快到位时换成真窗口,快照立刻收掉(不让放大过的快照盖在清晰的真窗口上)
@@ -15677,6 +15683,7 @@ namespace Glean
 
         void Finish(bool cancelled)
         {
+            if (Trace != null) Trace.Add((int)(Gfx.Ms - traceT0) + ":finish" + (cancelled ? "(cancel)" : ""));
             if (finished) return;
             finished = true;
             Frames.Remove(stepFn);

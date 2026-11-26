@@ -120,6 +120,7 @@ static class TexTest
         object cv = typeof(Glean.ShelfForm).GetField("cardView", NP).GetValue(shelf);
         cv.GetType().GetProperty("Selected").SetValue(cv, 1, null);
         Pump(200);
+        Glean.MorphWindow.Trace = new List<string>();
         Out("card rect " + cv.GetType().GetMethod("ScreenRectOf").Invoke(cv, new object[] { 1 }));
         Glean.QuickLook ql0 = (Glean.QuickLook)typeof(Glean.ShelfForm).GetField("quick", NP).GetValue(shelf);
         typeof(Glean.ShelfForm).GetMethod("ShowQuick", NP).Invoke(shelf, null);
@@ -127,10 +128,12 @@ static class TexTest
         Film("open", area, 12, 40, 0.5f);
         Pump(500);
         Glean.QuickLook ql = (Glean.QuickLook)typeof(Glean.ShelfForm).GetField("quick", NP).GetValue(shelf);
+        Out("trace open: " + string.Join(" ", Glean.MorphWindow.Trace.ToArray())); Glean.MorphWindow.Trace.Clear();
         Out("quick visible after open: " + ql.Visible + ", morph running " + Glean.MorphWindow.Running);
         typeof(Glean.ShelfForm).GetMethod("CloseQuick", NP).Invoke(shelf, null);
         Film("close", area, 8, 40, 0.5f);
         Pump(500);
+        Out("trace close: " + string.Join(" ", Glean.MorphWindow.Trace.ToArray()));
         Out("quick visible after close: " + ql.Visible + ", morph running " + Glean.MorphWindow.Running);
         // 悬停浮起
         cv.GetType().GetField("hover", NP).SetValue(cv, 3);

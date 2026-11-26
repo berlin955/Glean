@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.38.0.0")]
-[assembly: AssemblyFileVersion("0.38.0.0")]
+[assembly: AssemblyVersion("0.39.0.0")]
+[assembly: AssemblyFileVersion("0.39.0.0")]
 
 namespace Glean
 {
@@ -81,7 +81,7 @@ namespace Glean
         public static Keys ScanKey = Keys.Q;
         public static string ScanHotkeyText { get { return Describe(ScanCtrl, ScanAlt, ScanShift, false, ScanKey); } }
         public static uint ScanModifiers { get { return (ScanAlt ? 1u : 0) | (ScanCtrl ? 2u : 0) | (ScanShift ? 4u : 0); } }
-        public const string Version = "0.38";
+        public const string Version = "0.39";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -6676,6 +6676,7 @@ namespace Glean
         {
             try
             {
+                if (!Directory.Exists(Dir)) return;
                 FileInfo[] files = new DirectoryInfo(Dir).GetFiles("*.png");
                 if (files.Length <= 6000) return;
                 foreach (FileInfo f in files.OrderBy(x => x.LastWriteTimeUtc).Take(files.Length - 4000))

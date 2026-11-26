@@ -6676,6 +6676,7 @@ namespace Glean
         {
             try
             {
+                if (!Directory.Exists(Dir)) return;
                 FileInfo[] files = new DirectoryInfo(Dir).GetFiles("*.png");
                 if (files.Length <= 6000) return;
                 foreach (FileInfo f in files.OrderBy(x => x.LastWriteTimeUtc).Take(files.Length - 4000))

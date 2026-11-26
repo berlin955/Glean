@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.36.0.0")]
-[assembly: AssemblyFileVersion("0.36.0.0")]
+[assembly: AssemblyVersion("0.37.0.0")]
+[assembly: AssemblyFileVersion("0.37.0.0")]
 
 namespace Glean
 {
@@ -81,7 +81,7 @@ namespace Glean
         public static Keys ScanKey = Keys.Q;
         public static string ScanHotkeyText { get { return Describe(ScanCtrl, ScanAlt, ScanShift, false, ScanKey); } }
         public static uint ScanModifiers { get { return (ScanAlt ? 1u : 0) | (ScanCtrl ? 2u : 0) | (ScanShift ? 4u : 0); } }
-        public const string Version = "0.36";
+        public const string Version = "0.37";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -6074,7 +6074,7 @@ namespace Glean
             {
                 // 从卡片放大出来:先把预览完整画成一张图,交给形变窗口去飞,快到位时换成真窗口
                 Bitmap snap = Snapshot();
-                Bitmap card = MorphWindow.Grab(morphFrom);
+                Bitmap card = null;   // 卡片本身就在原处,不用截
                 if (snap != null)
                 {
                     int token = ++morphToken;
@@ -6122,7 +6122,7 @@ namespace Glean
         {
             if (!Visible || to.IsEmpty || !Frames.Enabled) { HideLook(); return; }
             Bitmap snap = MorphWindow.Grab(Bounds);
-            Bitmap card = MorphWindow.Grab(to);
+            Bitmap card = null;
             Rectangle from = Bounds;
             HideLook();
             if (snap == null) { if (card != null) card.Dispose(); return; }
@@ -15569,13 +15569,15 @@ namespace Glean
         }
     }
 
-    // 形变过渡:一张"快照"从 A 处的矩形(比如一张卡片)放大、移动到 B 处(比如预览窗口),
-    // 同时 A 的样子淡出、B 的样子淡入,圆角和投影跟着变化。macOS 快速预览就是这种效果
+    // 形变过渡:预览窗口的"快照"从卡片的位置放大、移动到预览窗口的位置(关闭时反过来),
+    // 圆角和投影一起缩放,透明度交给系统合成器。每一帧只做一次缩放贴图,高分屏上也很轻
     class MorphWindow : Form
     {
         [StructLayout(LayoutKind.Sequential)] struct PT { public int X, Y; public PT(int x, int y) { X = x; Y = y; } }
         [StructLayout(LayoutKind.Sequential)] struct SZ { public int W, H; public SZ(int w, int h) { W = w; H = h; } }
         [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct BIH { public int Size, Width, Height; public short Planes, BitCount; public int Compression, SizeImage, XPels, YPels, ClrUsed, ClrImportant; }
         [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND blend, int flags);
         [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
         [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
@@ -15583,24 +15585,33 @@ namespace Glean
         [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
         [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BIH bmi, uint usage, out IntPtr bits, IntPtr section, uint offset);
+        [DllImport("gdi32.dll")] static extern bool GdiFlush();
 
-        readonly Bitmap fromImg, toImg;
-        readonly Rectangle from, to;
-        readonly float rFrom, rTo;
+        readonly Rectangle from, to;      // 小(卡片)、大(预览窗口)
         readonly Spring sp;
         readonly bool opening;
         Action done;
-        Rectangle area;
-        Bitmap frame;
         bool finished;
         readonly Func<double, bool> stepFn;
         static MorphWindow current;
 
-        // opening = true:从 from 变到 to;false:从 to 缩回 from。done 在快要结束时调用一次(用来显示真窗口)
+        // 预先画好的一整张:预览的样子 + 圆角 + 投影。每一帧只把它缩放一下贴上去
+        Bitmap baked;
+        int pad;                          // baked 四周留给投影的宽度
+        // 直接作画的显示内存(只分配一次,不用每帧拷贝)
+        IntPtr memDC, dib, oldObj, bits;
+        Bitmap surface;
+        Graphics sg;
+        int surfW, surfH;
+
+        // opening = true:从 from 放大到 to;false:从 to 缩回 from。done 在快到位时调用一次(用来显示真窗口)
+        // fromImg 不再使用(保留参数,调用方不用改)
         public static void Run(Bitmap fromImg, Rectangle from, float rFrom, Bitmap toImg, Rectangle to, float rTo, bool opening, Action done)
         {
             Cancel();
-            current = new MorphWindow(fromImg, from, rFrom, toImg, to, rTo, opening, done);
+            if (fromImg != null) fromImg.Dispose();
+            current = new MorphWindow(toImg, from, to, rTo, opening, done);
             current.Start();
         }
 
@@ -15612,25 +15623,71 @@ namespace Glean
 
         public static bool Running { get { return current != null && !current.IsDisposed; } }
 
-        MorphWindow(Bitmap fromImg, Rectangle from, float rFrom, Bitmap toImg, Rectangle to, float rTo, bool opening, Action done)
+        MorphWindow(Bitmap toImg, Rectangle from, Rectangle to, float radius, bool opening, Action done)
         {
-            this.fromImg = fromImg; this.toImg = toImg;
-            this.from = from; this.to = to; this.rFrom = rFrom; this.rTo = rTo;
+            this.from = from; this.to = to;
             this.opening = opening;
             this.done = done;
-            // 打开:轻快、有一点点"弹"的落定;关闭:干脆地收回去
-            sp = opening ? new Spring(0.36, 0.82) : new Spring(0.22, 0.92);
+            // 打开:轻快、落定时有一丝弹性;关闭:干脆地收回去
+            sp = opening ? new Spring(0.34, 0.84) : new Spring(0.22, 0.95);
             sp.Rest = 0.002;
             sp.Value = opening ? 0 : 1;
             sp.Target = opening ? 1 : 0;
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
-            int pad = Gfx.S(40);
-            area = Rectangle.Union(from, to);
-            area.Inflate(pad, pad);
-            Bounds = area;
             stepFn = Step;
+            Bake(toImg, radius);
+            if (toImg != null) toImg.Dispose();
+        }
+
+        void Bake(Bitmap img, float radius)
+        {
+            pad = Gfx.S(28);
+            int w = to.Width + pad * 2, h = to.Height + pad * 2;
+            baked = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+            using (Graphics g = Graphics.FromImage(baked))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                RectangleF r = new RectangleF(pad, pad, to.Width, to.Height);
+                // 柔和的投影(下方略重)
+                for (int k = pad; k >= 1; k -= Math.Max(1, Gfx.S(2)))
+                {
+                    RectangleF sr = new RectangleF(r.X - k * 0.55f, r.Y - k * 0.35f + Gfx.S(6), r.Width + k * 1.1f, r.Height + k * 1.1f);
+                    using (GraphicsPath sh = Timeline.RR(sr, radius + k * 0.6f))
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb(Theme.Cur.Dark ? 9 : 6, 0, 0, 0)))
+                        g.FillPath(b, sh);
+                }
+                using (GraphicsPath clip = Timeline.RR(r, radius))
+                {
+                    if (img != null)
+                    {
+                        GraphicsState st = g.Save();
+                        g.SetClip(clip);
+                        g.DrawImage(img, r);
+                        g.Restore(st);
+                    }
+                    else using (SolidBrush b = new SolidBrush(Theme.Cur.Card)) g.FillPath(b, clip);
+                }
+                using (GraphicsPath edge = Timeline.RR(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), radius))
+                using (Pen pen = new Pen(Theme.Cur.Dark ? Color.FromArgb(40, 255, 255, 255) : Color.FromArgb(22, 0, 0, 0), 1f))
+                    g.DrawPath(pen, edge);
+            }
+            // 显示内存:最大就是 baked 这么大
+            surfW = w; surfH = h;
+            BIH bi = new BIH();
+            bi.Size = 40; bi.Width = w; bi.Height = -h; bi.Planes = 1; bi.BitCount = 32;
+            IntPtr screen = GetDC(IntPtr.Zero);
+            memDC = CreateCompatibleDC(screen);
+            ReleaseDC(IntPtr.Zero, screen);
+            dib = CreateDIBSection(memDC, ref bi, 0, out bits, IntPtr.Zero, 0);
+            oldObj = SelectObject(memDC, dib);
+            surface = new Bitmap(w, h, w * 4, PixelFormat.Format32bppPArgb, bits);
+            sg = Graphics.FromImage(surface);
+            sg.InterpolationMode = InterpolationMode.Bilinear;
+            sg.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+            sg.CompositingMode = CompositingMode.SourceCopy;
+            sg.CompositingQuality = CompositingQuality.HighSpeed;
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -15645,17 +15702,8 @@ namespace Glean
             }
         }
 
-        void Start()
-        {
-            traceT0 = Gfx.Ms;
-            if (Trace != null) Trace.Add("start " + (opening ? "open" : "close"));
-            Show();
-            Bounds = area;
-            Render();
-            Frames.Add(this, stepFn);
-        }
-
         public static List<string> Trace;   // 测试用:记录每一帧
+        static double traceT0;
 
         // 测试用:停掉动画,把进度 p 时的画面拿出来看
         public static Bitmap DebugFrame(double p)
@@ -15664,27 +15712,38 @@ namespace Glean
             Frames.Remove(current.stepFn);
             current.sp.Value = p;
             current.sp.Velocity = 0;
-            current.Render();
-            return current.frame == null ? null : new Bitmap(current.frame);
+            Rectangle r = current.Render();
+            if (r.IsEmpty) return null;
+            Bitmap b = new Bitmap(current.surfW, current.surfH, PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(b)) g.DrawImage(current.surface, 0, 0);
+            return b;
         }
-        static double traceT0;
+        public static Rectangle DebugBounds { get { return current == null ? Rectangle.Empty : current.lastRect; } }
+
+        void Start()
+        {
+            traceT0 = Gfx.Ms;
+            if (Trace != null) Trace.Add("start " + (opening ? "open" : "close"));
+            Rectangle r0 = FrameRect(sp.Value);
+            Bounds = r0;
+            Show();
+            Render();
+            Frames.Add(this, stepFn);
+        }
 
         bool Step(double dt)
         {
             if (finished || IsDisposed) return false;
             bool moving = sp.Step(dt);
             if (Trace != null) Trace.Add((int)(Gfx.Ms - traceT0) + ":" + sp.Value.ToString("0.000", CultureInfo.InvariantCulture));
-            // 快到位时(还剩一点点余韵)就把真窗口亮出来,再用一两帧把快照淡掉,衔接不留痕迹
             double p = sp.Value;
-            // 打开:快到位时换成真窗口,快照立刻收掉(不让放大过的快照盖在清晰的真窗口上)
-            // 关闭:缩到几乎看不见就结束,不留残影
+            // 打开:快到位时换成真窗口,形变窗口立刻收掉;关闭:缩到几乎看不见就结束
             bool end = !moving || (opening ? p > 0.985 && Math.Abs(sp.Velocity) < 0.6 : p < 0.06);
             if (end)
             {
                 Action d = done;
                 done = null;
                 if (d != null) { try { d(); } catch { } }
-                if (!opening) Render();
                 Finish(false);
                 return false;
             }
@@ -15699,7 +15758,7 @@ namespace Glean
             finished = true;
             Frames.Remove(stepFn);
             if (done != null && !cancelled) { Action d = done; done = null; try { d(); } catch { } }
-            // 晚一帧再关:真窗口已经画出来了,快照才消失,中间不会闪
+            // 打开时晚一点点再关:真窗口已经画出来了,形变窗口才消失,中间不会闪
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
             t.Interval = cancelled || !opening ? 1 : 20;
             t.Tick += delegate { t.Dispose(); try { Close(); } catch { } };
@@ -15712,98 +15771,52 @@ namespace Glean
             return (float)(t * t * (3 - 2 * t));
         }
 
-        void Render()
+        // 进度 p 时,整张图(连投影)在屏幕上的位置
+        Rectangle FrameRect(double p)
         {
-            if (IsDisposed || !IsHandleCreated) return;
-            double p = sp.Value;
             float q = (float)p;
-            // 当前的矩形:位置和大小都按进度插值(打开时略微过冲一点点,落定更有弹性)
-            RectangleF r = new RectangleF(
-                from.X + (to.X - from.X) * q, from.Y + (to.Y - from.Y) * q,
-                Math.Max(4, from.Width + (to.Width - from.Width) * q), Math.Max(4, from.Height + (to.Height - from.Height) * q));
-            r.Offset(-area.X, -area.Y);
-            float rad = rFrom + (rTo - rFrom) * Math.Max(0, Math.Min(1, q));
-            float pc = (float)Math.Max(0, Math.Min(1, p));
-            if (frame == null) frame = new Bitmap(area.Width, area.Height, PixelFormat.Format32bppPArgb);
-            using (Graphics g = Graphics.FromImage(frame))
-            {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.InterpolationMode = InterpolationMode.Bilinear;
-                g.PixelOffsetMode = PixelOffsetMode.Half;
-                // 投影:越接近目标越深、越大(像窗口从卡片里"浮"起来)
-                float lift = pc;
-                int layers = 10;
-                for (int k = layers; k >= 1; k--)
-                {
-                    float spread = k * Gfx.S(2) * (0.4f + 0.6f * lift);
-                    RectangleF sr = new RectangleF(r.X - spread / 2, r.Y - spread / 3 + Gfx.S(6) * lift, r.Width + spread, r.Height + spread);
-                    using (GraphicsPath sh = Timeline.RR(sr, rad + spread / 2))
-                    using (SolidBrush b = new SolidBrush(Color.FromArgb((int)(7 * (0.35f + 0.65f * lift)), 0, 0, 0)))
-                        g.FillPath(b, sh);
-                }
-                using (GraphicsPath clip = Timeline.RR(r, rad))
-                {
-                    GraphicsState st = g.Save();
-                    g.SetClip(clip);
-                    // 起点的样子渐渐淡出,终点的样子渐渐淡入(终点盖在上面)
-                    float aTo = Smooth(0.08, 0.55, p), aFrom = 1 - Smooth(0.35, 0.8, p);
-                    if (fromImg != null && aFrom > 0.01f) DrawFaded(g, fromImg, r, aFrom);
-                    else if (fromImg == null) using (SolidBrush b = new SolidBrush(Theme.Cur.Card)) g.FillRectangle(b, r);
-                    if (toImg != null && aTo > 0.01f) DrawFaded(g, toImg, r, aTo);
-                    g.Restore(st);
-                }
-                using (GraphicsPath edge = Timeline.RR(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), rad))
-                using (Pen pen = new Pen(Color.FromArgb(Theme.Cur.Dark ? 40 : 22, Theme.Cur.Dark ? 255 : 0, Theme.Cur.Dark ? 255 : 0, Theme.Cur.Dark ? 255 : 0), 1f))
-                    g.DrawPath(pen, edge);
-            }
-            // 关闭时最后一点淡出;打开时一开始很快变实
-            float alpha = opening ? Math.Min(1f, 0.35f + 0.65f * Smooth(0, 0.25, p)) : Smooth(0.06, 0.4, p);
-            Push((byte)(alpha * 255));
+            float x = from.X + (to.X - from.X) * q, y = from.Y + (to.Y - from.Y) * q;
+            float w = Math.Max(8, from.Width + (to.Width - from.Width) * q), h = Math.Max(8, from.Height + (to.Height - from.Height) * q);
+            float sx = w / to.Width, sy = h / to.Height;
+            return Rectangle.Round(new RectangleF(x - pad * sx, y - pad * sy, w + pad * 2 * sx, h + pad * 2 * sy));
         }
 
-        static void DrawFaded(Graphics g, Bitmap img, RectangleF r, float a)
-        {
-            if (a >= 0.99f) { g.DrawImage(img, r); return; }
-            using (ImageAttributes ia = new ImageAttributes())
-            {
-                ColorMatrix cm = new ColorMatrix();
-                cm.Matrix33 = a;
-                ia.SetColorMatrix(cm);
-                g.DrawImage(img, new Rectangle((int)Math.Round(r.X), (int)Math.Round(r.Y), (int)Math.Round(r.Width), (int)Math.Round(r.Height)),
-                    0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
-            }
-        }
+        Rectangle lastRect;
 
-        void Push(byte alpha)
+        Rectangle Render()
         {
+            if (IsDisposed || !IsHandleCreated || sg == null) return Rectangle.Empty;
+            double p = sp.Value;
+            Rectangle fr = FrameRect(p);
+            int w = Math.Min(surfW, Math.Max(1, fr.Width)), h = Math.Min(surfH, Math.Max(1, fr.Height));
+            // 整张缩放贴上去(SourceCopy:直接覆盖,不用先清空、也不用混合)
+            sg.DrawImage(baked, new Rectangle(0, 0, w, h), 0, 0, baked.Width, baked.Height, GraphicsUnit.Pixel);
+            GdiFlush();
+            // 透明度交给系统合成器:打开时一开始很快变实,关闭时最后一段淡出
+            float alpha = opening ? 0.25f + 0.75f * Smooth(0, 0.22, p) : Smooth(0.06, 0.45, p);
             IntPtr screen = GetDC(IntPtr.Zero);
-            IntPtr mem = CreateCompatibleDC(screen);
-            IntPtr hb = IntPtr.Zero, old = IntPtr.Zero;
             try
             {
-                hb = frame.GetHbitmap(Color.FromArgb(0));
-                old = SelectObject(mem, hb);
-                PT pos = new PT(area.X, area.Y), src = new PT(0, 0);
-                SZ size = new SZ(area.Width, area.Height);
+                PT pos = new PT(fr.X, fr.Y), src = new PT(0, 0);
+                SZ size = new SZ(w, h);
                 BLEND b = new BLEND();
-                b.Alpha = alpha; b.Format = 1;
-                UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref b, 2);
+                b.Alpha = (byte)Math.Max(0, Math.Min(255, (int)(alpha * 255)));
+                b.Format = 1;
+                UpdateLayeredWindow(Handle, screen, ref pos, ref size, memDC, ref src, 0, ref b, 2);
             }
-            finally
-            {
-                ReleaseDC(IntPtr.Zero, screen);
-                if (hb != IntPtr.Zero) { SelectObject(mem, old); DeleteObject(hb); }
-                DeleteDC(mem);
-            }
+            finally { ReleaseDC(IntPtr.Zero, screen); }
+            lastRect = new Rectangle(fr.X, fr.Y, w, h);
+            return lastRect;
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             Frames.Remove(stepFn);
-            if (frame != null) frame.Dispose();
-            if (fromImg != null) fromImg.Dispose();
-            if (toImg != null) toImg.Dispose();
+            if (sg != null) sg.Dispose();
+            if (surface != null) surface.Dispose();
+            if (memDC != IntPtr.Zero) { SelectObject(memDC, oldObj); DeleteDC(memDC); }
+            if (dib != IntPtr.Zero) DeleteObject(dib);
+            if (baked != null) baked.Dispose();
             if (current == this) current = null;
             base.OnFormClosed(e);
         }

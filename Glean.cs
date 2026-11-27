@@ -27,8 +27,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Berlin955")]
 [assembly: AssemblyProduct("Glean 拾光")]
 [assembly: AssemblyCopyright("© 2026 Berlin955")]
-[assembly: AssemblyVersion("0.39.0.0")]
-[assembly: AssemblyFileVersion("0.39.0.0")]
+[assembly: AssemblyVersion("0.40.0.0")]
+[assembly: AssemblyFileVersion("0.40.0.0")]
 
 namespace Glean
 {
@@ -81,7 +81,7 @@ namespace Glean
         public static Keys ScanKey = Keys.Q;
         public static string ScanHotkeyText { get { return Describe(ScanCtrl, ScanAlt, ScanShift, false, ScanKey); } }
         public static uint ScanModifiers { get { return (ScanAlt ? 1u : 0) | (ScanCtrl ? 2u : 0) | (ScanShift ? 4u : 0); } }
-        public const string Version = "0.39";
+        public const string Version = "0.40";
         public const int MaxTextLength = 100000;   // 超长文本不记录
 
         public static string DefaultDir
@@ -8495,8 +8495,17 @@ namespace Glean
         {
             if (index < 0 || index >= shown.Count) return;
             Item it = shown[index];
+            HideAndApply(it, paste);
+        }
+
+        // 先把内容写进剪切板,再收起面板、切回原来的窗口粘贴。
+        // 顺序很重要:Photoshop 只在自己重新变成当前窗口的那一刻读一次剪切板,之后一直用它记住的那份;
+        // 要是先收面板再写剪切板,PS 就会一直粘贴之前那张图
+        void HideAndApply(Item it, bool paste)
+        {
+            if (!owner.Put(it)) { HideNow(); return; }
             HideNow();
-            owner.Apply(it, paste);
+            owner.PasteBack(it, paste);
         }
 
         void Reselect(Item it, int fallback)
@@ -8711,8 +8720,7 @@ namespace Glean
             if (ni == null) return;
             if (paste && Visible && !filesMode)
             {
-                HideNow();
-                owner.Apply(ni, true);   // 和"粘贴为…"一样:粘贴到原来的窗口,同时作为新卡片留在历史里
+                HideAndApply(ni, true);   // 和"粘贴为…"一样:粘贴到原来的窗口,同时作为新卡片留在历史里
                 return;
             }
             owner.Apply(ni, false);
@@ -8842,9 +8850,8 @@ namespace Glean
             string r;
             try { r = f(it.Text); }
             catch { return; }
-            HideNow();
             Item ni = owner.Record(r);
-            owner.Apply(ni ?? it, true);
+            HideAndApply(ni ?? it, true);
         }
 
         void AddTransform(ToolStripMenuItem parent, string title, Item it, Func<string, string> f)
@@ -15844,6 +15851,12 @@ namespace Glean
         // ------------------------------------------------ 选中一条:放入剪切板并(可选)粘贴
         public void Apply(Item it, bool paste)
         {
+            if (Put(it)) PasteBack(it, paste);
+        }
+
+        // 写进剪切板;失败返回 false
+        public bool Put(Item it)
+        {
             ignoreUntil = DateTime.Now.AddMilliseconds(800);   // 避免把自己写入的内容又记一遍
             try
             {
@@ -15858,7 +15871,7 @@ namespace Glean
                     if (exist.Count == 0)
                     {
                         tray.ShowBalloonTip(2500, Brand.Name, "这些文件已被移动或删除,无法再粘贴", ToolTipIcon.Warning);
-                        return;
+                        return false;
                     }
                     StringCollection sc = new StringCollection();
                     sc.AddRange(exist.ToArray());
@@ -15876,8 +15889,14 @@ namespace Glean
             catch
             {
                 tray.ShowBalloonTip(2000, Brand.Name, "写入剪切板失败,请重试", ToolTipIcon.Warning);
-                return;
+                return false;
             }
+            return true;
+        }
+
+        // 记一次使用,需要的话切回原来的窗口按 Ctrl+V
+        public void PasteBack(Item it, bool paste)
+        {
             hist.Touch(it);
 
             if (paste && Config.AutoPaste && prevWnd != IntPtr.Zero)
